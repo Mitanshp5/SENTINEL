@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Tooltip, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { useFeedStore, useIncidentStore } from '../../store';
@@ -24,16 +24,26 @@ const getSpeedColor = (speed: number): string => {
   return '#22c55e';                 // green — free flow
 };
 
-const MapController: React.FC<{ center: [number, number]; zoom: number }> = ({ center, zoom }) => {
+const MapController: React.FC<{ center: [number, number]; zoom: number; city: string }> = ({ center, zoom, city }) => {
   const map = useMap();
+  const prevCityRef = useRef<string>('');
+  const mountedRef = useRef<boolean>(false);
+
   useEffect(() => {
-    map.setView(center, zoom);
-  }, [center, zoom, map]);
+    // Only call setView on initial mount OR when the city actually changes
+    // Do NOT re-zoom on incident detection, feed updates, or segment changes
+    if (!mountedRef.current || prevCityRef.current !== city) {
+      map.setView(center, zoom);
+      prevCityRef.current = city;
+      mountedRef.current = true;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [city]); // Intentionally only city in deps — center/zoom changes must NOT trigger setView
   return null;
 };
 
 const TrafficMap: React.FC = () => {
-  const { segments, cityCenter } = useFeedStore();
+  const { segments, cityCenter, city } = useFeedStore();
   const { currentIncident, diversionRoutes, collisions, setCollisions, congestionZones, congestionRoutes, blockedRoute, alternateRoute, incidentRouteOrigin, incidentRouteDest } = useIncidentStore();
 
   useEffect(() => {
@@ -59,7 +69,7 @@ const TrafficMap: React.FC = () => {
         className="w-full h-full"
         zoomControl={false}
       >
-        <MapController center={mapCenter} zoom={mapZoom} />
+        <MapController center={mapCenter} zoom={mapZoom} city={city} />
 
         <TileLayer
           url="https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"

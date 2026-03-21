@@ -149,7 +149,7 @@ async def lifespan(app: FastAPI):
             # 2. Fetch nearby collisions
             coords = incident.get("location", {}).get("coordinates", [0, 0])
             lng, lat = coords[0], coords[1]
-            collisions_data = await collision_service.get_nearby_collisions(lat, lng)
+            collisions_data = await collision_service.get_nearby_collisions(lat, lng, city=city)
             collision_context = collision_service.get_collision_context_for_llm(collisions_data)
 
             # Broadcast collisions for map overlay
@@ -316,8 +316,10 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning(f"Failed to save congestion zone: {e}")
 
-            # Compute road-snapped alternate route for congestion
-            congestion_routes = await routing_service.compute_incident_route_pair(lng, lat, city=city)
+            # Use segment-aware routing for congestion (entry/exit from bounding box of congested segments)
+            congestion_routes = await routing_service.compute_congestion_route_pair(
+                zone.get("segments", []), city=city
+            )
             alt_routes = [
                 {
                     "priority": 1,

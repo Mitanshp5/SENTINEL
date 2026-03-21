@@ -154,6 +154,89 @@ class RoutingService:
             },
         }
 
+    async def compute_congestion_route_pair(
+        self,
+        congested_segments: list[dict],
+        city: str = "nyc",
+    ) -> dict:
+        """
+        Compute blocked road (red) + best alternate route (green) for a congestion zone.
+        
+        Uses segment bounding box to find the true entry/exit points of the congested road,
+        rather than a fixed diagonal offset from a single center point.
+        
+        - Entry (origin) = point just upstream of congestion zone
+        - Exit (destination) = point just downstream of congestion zone
+        - Red line = ORS direct route through congestion (the blocked road)
+        - Green line = ORS route avoiding ALL congested segment positions
+        """
+        lats = [s["lat"] for s in congested_segments if s.get("lat")]
+        lngs = [s["lng"] for s in congested_segments if s.get("lng")]
+
+        if not lats or not lngs:
+            logger.warning("compute_congestion_route_pair: no valid segment coords, falling back to incident pair")
+            avg_lat = sum(lats) / len(lats) if lats else 0
+            avg_lng = sum(lngs) / len(lngs) if lngs else 0
+            return await self.compute_incident_route_pair(avg_lng, avg_lat, city)
+
+        min_lat, max_lat = min(lats), max(lats)
+        min_lng, max_lng = min(lngs), max(lngs)
+        center_lat = (min_lat + max_lat) / 2
+        center_lng = (min_lng + max_lng) / 2
+        lat_span = max_lat - min_lat
+        lng_span = max_lng - min_lng
+
+        offset = 0.008  # ~900m upstream/downstream of the congested zone
+
+        if lat_span >= lng_span:
+            # N-S oriented road — offset along latitude
+            origin = (round(center_lng, 6), round(min_lat - offset, 6))
+            destination = (round(center_lng, 6), round(max_lat + offset, 6))
+        else:
+            # E-W oriented road — offset along longitude
+            origin = (round(min_lng - offset, 6), round(center_lat, 6))
+            destination = (round(max_lng + offset, 6), round(center_lat, 6))
+
+        logger.info(
+            f"Congestion route pair: origin={origin} dest={destination} "
+            f"zone={len(congested_segments)} segments ({lat_span:.4f}°lat × {lng_span:.4f}°lng)"
+        )
+
+        # Blocked (red): direct route through the congested zone
+        blocked_raw = await self.get_diversion_route(origin, destination, avoid_coords=None)
+        blocked_info = self.extract_route_info(blocked_raw) if blocked_raw else {}
+
+        # Alternate (green): avoid ALL congested segment positions
+        avoid_coords = [
+            (round(s["lng"], 6), round(s["lat"], 6))
+            for s in congested_segments
+            if s.get("lng") and s.get("lat")
+        ]
+        alt_raw = await self.get_diversion_route(origin, destination, avoid_coords=avoid_coords)
+        alt_info = self.extract_route_info(alt_raw) if alt_raw else {}
+
+        fallback_blocked = {
+            "type": "LineString",
+            "coordinates": [list(origin), [center_lng, center_lat], list(destination)],
+        }
+        fallback_alt = {"type": "LineString", "coordinates": [list(origin), list(destination)]}
+
+        return {
+            "origin": list(origin),
+            "destination": list(destination),
+            "blocked": {
+                "geometry": blocked_info.get("geometry", fallback_blocked),
+                "total_length_km": blocked_info.get("total_distance_km", 0),
+                "street_names": blocked_info.get("street_names", []),
+            },
+            "alternate": {
+                "geometry": alt_info.get("geometry", fallback_alt),
+                "total_length_km": alt_info.get("total_distance_km", 0),
+                "estimated_extra_minutes": alt_info.get("total_duration_min", 0),
+                "street_names": alt_info.get("street_names", []),
+            },
+        }
+
     async def compute_diversions_for_incident(
         self, incident_location: tuple[float, float],
         city: str = "nyc"
