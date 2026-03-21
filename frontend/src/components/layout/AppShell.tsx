@@ -109,7 +109,7 @@ const AppShell: React.FC<AppShellProps> = ({ leftPanel, centerPanel, rightPanel 
       )}
 
       {/* ═══ MAIN GRID ═══ */}
-      <mainclassName="flex-1 flex overflow-hidden">
+      <main className="flex-1 flex overflow-hidden">
         {/* Left Panel: Intelligence Outputs */}
         <section className="w-[340px] border-r border-scada-border flex flex-col bg-scada-bg overflow-hidden">
           <div className="h-9 px-4 border-b border-scada-border flex items-center gap-2">
