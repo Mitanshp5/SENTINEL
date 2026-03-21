@@ -242,7 +242,44 @@ async def lifespan(app: FastAPI):
             })
             logger.info(f"Incident routes broadcast: blocked={len(incident_routes['blocked'].get('geometry', {}).get('coordinates', []))} pts, alternate={len(incident_routes['alternate'].get('geometry', {}).get('coordinates', []))} pts")
 
-            # Keep diversions for LLM context (reuse existing field name for backward compat)
+            # ═══ Create congestion zone around incident based on severity ═══
+            severity = incident.get("severity", "moderate")
+            severity_radius = {
+                "critical": 0.006,   # ~660m radius
+                "major": 0.004,      # ~440m radius
+                "moderate": 0.003,   # ~330m radius
+                "minor": 0.002,      # ~220m radius
+            }
+            radius = severity_radius.get(severity, 0.003)
+
+            incident_zone = {
+                "zone_id": f"incident_{incident_id}",
+                "city": city,
+                "name": f"Incident zone — {incident.get('on_street', 'unknown')}",
+                "severity": "severe" if severity in ("critical", "major") else "moderate",
+                "center": [lng, lat],
+                "polygon": [
+                    [lng - radius, lat - radius],
+                    [lng + radius, lat - radius],
+                    [lng + radius, lat + radius],
+                    [lng - radius, lat + radius],
+                    [lng - radius, lat - radius],
+                ],
+                "source": "incident",
+                "status": "active",
+                "incident_id": incident_id,
+            }
+
+            if db.congestion_zones is not None:
+                await db.congestion_zones.insert_one(incident_zone.copy())
+
+            await ws_manager.broadcast({
+                "type": "congestion_alert",
+                "data": incident_zone,
+            })
+            logger.info(f"Created congestion zone around incident: radius={radius}° severity={severity}")
+
+            # Keep diversions for LLM context(reuse existing field name for backward compat)
             diversions = [
                 {
                     "priority": 1,

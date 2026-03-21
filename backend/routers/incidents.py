@@ -144,8 +144,18 @@ async def resolve_incident(incident_id: str, body: ResolveRequest, request: Requ
         {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat()}},
     )
 
+    # Clear incident-generated congestion zone
+    if db.congestion_zones is not None:
+        await db.congestion_zones.delete_many({"incident_id": incident_id})
+
     # Broadcast resolution via WebSocket
     ws_manager = request.app.state.ws_manager
+
+    await ws_manager.broadcast({
+        "type": "congestion_cleared",
+        "data": {"zone_id": f"incident_{incident_id}"},
+    })
+
     await ws_manager.broadcast({
         "type": "incident_resolved",
         "data": {"incident_id": incident_id},
@@ -191,7 +201,17 @@ async def dismiss_incident(incident_id: str, body: ResolveRequest, request: Requ
         }},
     )
 
+    # Clear incident-generated congestion zone
+    if db.congestion_zones is not None:
+        await db.congestion_zones.delete_many({"incident_id": incident_id})
+
     ws_manager = request.app.state.ws_manager
+
+    await ws_manager.broadcast({
+        "type": "congestion_cleared",
+        "data": {"zone_id": f"incident_{incident_id}"},
+    })
+
     await ws_manager.broadcast({
         "type": "incident_resolved",
         "data": {"incident_id": incident_id},

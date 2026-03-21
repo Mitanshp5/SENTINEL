@@ -35,6 +35,34 @@ const isNearBlockedRoute = (lat: number, lng: number, blockedCoords: number[][])
   return false;
 };
 
+const getIncidentAdjustedSpeed = (
+  segLat: number, segLng: number, speed: number,
+  activeIncidents: any[]
+): number => {
+  for (const inc of activeIncidents) {
+    const incLat = inc.location?.lat;
+    const incLng = inc.location?.lng;
+    if (incLat == null || incLng == null) continue;
+    const dist = Math.sqrt(
+      Math.pow(segLat - incLat, 2) + Math.pow(segLng - incLng, 2)
+    );
+
+    const severityConfig: Record<string, { radius: number; penalty: number }> = {
+      critical: { radius: 0.006, penalty: 0.1 },
+      major:    { radius: 0.004, penalty: 0.3 },
+      moderate: { radius: 0.003, penalty: 0.5 },
+      minor:    { radius: 0.002, penalty: 0.7 },
+    };
+    const config = severityConfig[inc.severity] || severityConfig.moderate;
+
+    if (dist < config.radius) {
+      const factor = config.penalty + (1 - config.penalty) * (dist / config.radius);
+      return speed * factor;
+    }
+  }
+  return speed;
+};
+
 const MapController: React.FC<{ center: [number, number]; zoom: number; city: string }> = ({ center, zoom, city }) => {
   const map = useMap();
   const prevCityRef = useRef<string>('');
@@ -107,9 +135,12 @@ const TrafficMap: React.FC = () => {
 
         {/* Traffic Speed Segments — only shown when there are active incidents */}
         {incidents.filter(i => i.status === 'active' && i.city === city).length > 0 && segments.map((seg) => {
+          const cityIncidents = incidents.filter(i => i.status === 'active' && i.city === city);
           const isBlocked = allBlockedCoords.length > 0 && isNearBlockedRoute(seg.lat, seg.lng, allBlockedCoords);
-          const color = isBlocked ? '#ef4444' : getSpeedColor(seg.speed);
-          const radius = isBlocked ? 9 : (seg.speed < 5 ? 8 : 6);
+          const adjustedSpeed = getIncidentAdjustedSpeed(seg.lat, seg.lng, seg.speed, cityIncidents);
+          const color = isBlocked ? '#ef4444' : getSpeedColor(adjustedSpeed);
+          const radius = isBlocked ? 9 : (adjustedSpeed < 5 ? 8 : 6);
+          const speedChanged = Math.abs(adjustedSpeed - seg.speed) > 0.5;
           return (
             <CircleMarker
               key={seg.link_id}
@@ -124,7 +155,7 @@ const TrafficMap: React.FC = () => {
             >
               <Tooltip direction="top" offset={[0, -6]} opacity={0.9}>
                 <span className="text-[10px] font-mono">
-                  {isBlocked ? '🔴 ' : ''}{seg.link_name} — {seg.speed.toFixed(0)} mph{isBlocked ? ' [BLOCKED]' : ''}
+                  {isBlocked ? '🔴 ' : ''}{seg.link_name} — {adjustedSpeed.toFixed(0)} mph{speedChanged ? ` (was ${seg.speed.toFixed(0)})` : ''}{isBlocked ? ' [BLOCKED]' : ''}
                 </span>
               </Tooltip>
             </CircleMarker>
