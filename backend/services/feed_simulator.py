@@ -66,25 +66,73 @@ class FeedSimulator:
                 self.current_frame_idx = 0
                 return
 
-        # 2. Fall back to cached CSV
+        # 2. Fall back to cached CSV (dedup by link_id, handle both upper/lowercase columns)
         if csv_path.exists():
-            df = pd.read_csv(csv_path)
-            grouped = df.groupby("DATA_AS_OF")
-            self.frames = []
-            for ts, group in sorted(grouped):
-                frame = []
-                for _, row in group.iterrows():
-                    frame.append({
-                        "link_id": str(row["LINK_ID"]),
-                        "link_name": str(row.get("LINK_NAME", "")),
-                        "speed": float(row.get("SPEED", 0)),
-                        "travel_time": float(row.get("TRAVEL_TIME", 0)),
-                        "status": str(row.get("STATUS", "OK")),
-                        "lat": float(row.get("LATITUDE", 0)),
-                        "lng": float(row.get("LONGITUDE", 0)),
+            try:
+                import random as _rng
+                df = pd.read_csv(csv_path)
+                cols = {c.lower(): c for c in df.columns}
+
+                lid_col = cols.get("link_id", "link_id")
+                ln_col = cols.get("link_name", "link_name")
+                spd_col = cols.get("speed", "speed")
+                tt_col = cols.get("travel_time", "travel_time")
+                dao_col = cols.get("data_as_of", "data_as_of")
+                lp_col = cols.get("link_points", None)
+                lat_col = cols.get("latitude", None)
+                lng_col = cols.get("longitude", None)
+
+                latest_by_link: dict[str, dict] = {}
+                for _, row in df.iterrows():
+                    lid = str(row.get(lid_col, "") or "")
+                    if not lid or lid == "nan":
+                        continue
+                    ts = str(row.get(dao_col, "") or "")
+                    existing = latest_by_link.get(lid)
+                    if not existing or ts > str(existing.get(dao_col, "")):
+                        latest_by_link[lid] = row.to_dict()
+
+                base_frame: list[dict] = []
+                for rec in latest_by_link.values():
+                    speed = float(rec.get(spd_col, 0) or 0)
+                    lat, lng = 0.0, 0.0
+                    if lp_col and rec.get(lp_col):
+                        lat, lng = self._parse_link_points(str(rec.get(lp_col, "")))
+                    if lat == 0 and lng == 0 and lat_col and lng_col:
+                        lat = float(rec.get(lat_col, 0) or 0)
+                        lng = float(rec.get(lng_col, 0) or 0)
+                    if lat == 0 and lng == 0:
+                        continue
+                    base_frame.append({
+                        "link_id": str(rec.get(lid_col, "")),
+                        "link_name": str(rec.get(ln_col, "Unknown")),
+                        "speed": round(speed, 1),
+                        "travel_time": round(float(rec.get(tt_col, 0) or 0), 2),
+                        "status": "BLOCKED" if speed < 2 else "SLOW" if speed < 15 else "OK",
+                        "lat": lat,
+                        "lng": lng,
                     })
-                self.frames.append(frame)
-            logger.info(f"Loaded {len(self.frames)} frames for {city} from {csv_path}")
+
+                if base_frame:
+                    self.frames = []
+                    for _ in range(12):
+                        frame = []
+                        for seg in base_frame:
+                            noise = _rng.uniform(-2.5, 2.5)
+                            spd = max(0.0, round(seg["speed"] + noise, 1))
+                            frame.append({
+                                **seg,
+                                "speed": spd,
+                                "status": "BLOCKED" if spd < 2 else "SLOW" if spd < 15 else "OK",
+                            })
+                        self.frames.append(frame)
+                    logger.info(f"CSV fallback: {len(base_frame)} unique segments → {len(self.frames)} frames for {city}")
+                else:
+                    logger.warning(f"CSV had no valid segments for {city}, generating demo data")
+                    self.frames = self._generate_demo_data(city)
+            except Exception as e:
+                logger.warning(f"CSV fallback failed for {city}: {e}, generating demo data")
+                self.frames = self._generate_demo_data(city)
         else:
             # 3. Generate synthetic demo data
             logger.warning(f"No API data or CSV for {city}, generating demo data")

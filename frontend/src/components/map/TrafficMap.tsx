@@ -24,6 +24,17 @@ const getSpeedColor = (speed: number): string => {
   return '#22c55e';                 // green — free flow
 };
 
+const isNearBlockedRoute = (lat: number, lng: number, blockedCoords: number[][]): boolean => {
+  if (!blockedCoords || blockedCoords.length === 0) return false;
+  const threshold = 0.003; // ~330m proximity
+  for (const coord of blockedCoords) {
+    if (Math.abs(lat - coord[1]) < threshold && Math.abs(lng - coord[0]) < threshold) {
+      return true;
+    }
+  }
+  return false;
+};
+
 const MapController: React.FC<{ center: [number, number]; zoom: number; city: string }> = ({ center, zoom, city }) => {
   const map = useMap();
   const prevCityRef = useRef<string>('');
@@ -45,6 +56,7 @@ const MapController: React.FC<{ center: [number, number]; zoom: number; city: st
 const TrafficMap: React.FC = () => {
   const { segments, cityCenter, city } = useFeedStore();
   const { currentIncident, diversionRoutes, collisions, setCollisions, congestionZones, congestionRoutes, blockedRoute, alternateRoute, incidentRouteOrigin, incidentRouteDest } = useIncidentStore();
+  const blockedCoords: number[][] = blockedRoute?.geometry?.coordinates || [];
 
   useEffect(() => {
     if (currentIncident) {
@@ -77,25 +89,30 @@ const TrafficMap: React.FC = () => {
         />
 
         {/* Traffic Speed Segments */}
-        {segments.map((seg) => (
-          <CircleMarker
-            key={seg.link_id}
-            center={[seg.lat, seg.lng]}
-            radius={seg.speed < 5 ? 8 : 6}
-            pathOptions={{
-              color: getSpeedColor(seg.speed),
-              fillColor: getSpeedColor(seg.speed),
-              fillOpacity: 0.85,
-              weight: 1,
-            }}
-          >
-            <Tooltip direction="top" offset={[0, -6]} opacity={0.9}>
-              <span className="text-[10px] font-mono">
-                {seg.link_name} — {seg.speed.toFixed(0)} mph
-              </span>
-            </Tooltip>
-          </CircleMarker>
-        ))}
+        {segments.map((seg) => {
+          const isBlocked = blockedCoords.length > 0 && isNearBlockedRoute(seg.lat, seg.lng, blockedCoords);
+          const color = isBlocked ? '#ef4444' : getSpeedColor(seg.speed);
+          const radius = isBlocked ? 9 : (seg.speed < 5 ? 8 : 6);
+          return (
+            <CircleMarker
+              key={seg.link_id}
+              center={[seg.lat, seg.lng]}
+              radius={radius}
+              pathOptions={{
+                color,
+                fillColor: color,
+                fillOpacity: 0.85,
+                weight: isBlocked ? 2 : 1,
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -6]} opacity={0.9}>
+                <span className="text-[10px] font-mono">
+                  {isBlocked ? '🔴 ' : ''}{seg.link_name} — {seg.speed.toFixed(0)} mph{isBlocked ? ' [BLOCKED]' : ''}
+                </span>
+              </Tooltip>
+            </CircleMarker>
+          );
+        })}
 
         {/* Incident Marker with pulsing effect */}
         {currentIncident && (

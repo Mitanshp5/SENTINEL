@@ -149,20 +149,35 @@ class RoutingService:
 
         # Single-point incident: build a 0.005° padding box around the incident
         incident_corridor = self._bounding_box_polygon(
-            incident_lng - 0.005, incident_lat - 0.005,
-            incident_lng + 0.005, incident_lat + 0.005,
+            incident_lng - 0.003, incident_lat - 0.003,
+            incident_lng + 0.003, incident_lat + 0.003,
         )
 
         # Forced perpendicular waypoint — offset in latitude to reach a parallel E-W street
-        waypoint_lat_offset = 0.012
+        waypoint_lat_offset = 0.006
         waypoint = (round(incident_lng, 6), round(incident_lat + waypoint_lat_offset, 6))
 
-        # Alternate route: avoid the incident corridor + forced waypoint on parallel road
+        # Alternate route: try with avoidance polygon only first
         alt_raw = await self.get_diversion_route(
             origin, destination,
-            waypoint=waypoint,
             avoid_polygon=incident_corridor,
         )
+
+        # If alternate route is too similar to blocked route, force a waypoint
+        if alt_raw and blocked_raw:
+            try:
+                alt_coords = alt_raw.get("features", [{}])[0].get("geometry", {}).get("coordinates", [])
+                blk_coords = blocked_raw.get("features", [{}])[0].get("geometry", {}).get("coordinates", [])
+                if self._routes_too_similar(blk_coords, alt_coords):
+                    logger.info("Alternate too similar to blocked — adding forced waypoint")
+                    alt_raw = await self.get_diversion_route(
+                        origin, destination,
+                        waypoint=waypoint,
+                        avoid_polygon=incident_corridor,
+                    )
+            except Exception:
+                pass  # Keep the non-waypoint alternate
+
         alt_info = self.extract_route_info(alt_raw) if alt_raw else {}
 
         return {
@@ -231,26 +246,41 @@ class RoutingService:
 
         # Build corridor polygon (with 0.003° padding = ~330m)
         corridor_polygon = self._bounding_box_polygon(
-            min_lng - 0.003, min_lat - 0.003,
-            max_lng + 0.003, max_lat + 0.003
+            min_lng - 0.002, min_lat - 0.002,
+            max_lng + 0.002, max_lat + 0.002
         )
 
         # Forced perpendicular waypoint to ensure ORS uses a different road
         if lat_span >= lng_span:  # N-S road → offset in longitude
-            waypoint = (round(center_lng + 0.013, 6), round(center_lat, 6))
+            waypoint = (round(center_lng + 0.007, 6), round(center_lat, 6))
         else:  # E-W road → offset in latitude
-            waypoint = (round(center_lng, 6), round(center_lat + 0.013, 6))
+            waypoint = (round(center_lng, 6), round(center_lat + 0.007, 6))
 
         # Blocked (red): direct route through the congested zone
         blocked_raw = await self.get_diversion_route(origin, destination, avoid_coords=None)
         blocked_info = self.extract_route_info(blocked_raw) if blocked_raw else {}
 
-        # Alternate (green): avoid the entire corridor + forced waypoint on parallel road
+        # Try without waypoint first
         alt_raw = await self.get_diversion_route(
             origin, destination,
-            waypoint=waypoint,
             avoid_polygon=corridor_polygon,
         )
+
+        # Add waypoint only if routes are too similar
+        if alt_raw and blocked_raw:
+            try:
+                alt_coords = alt_raw.get("features", [{}])[0].get("geometry", {}).get("coordinates", [])
+                blk_coords = blocked_raw.get("features", [{}])[0].get("geometry", {}).get("coordinates", [])
+                if self._routes_too_similar(blk_coords, alt_coords):
+                    logger.info("Congestion alternate too similar — adding forced waypoint")
+                    alt_raw = await self.get_diversion_route(
+                        origin, destination,
+                        waypoint=waypoint,
+                        avoid_polygon=corridor_polygon,
+                    )
+            except Exception:
+                pass
+
         alt_info = self.extract_route_info(alt_raw) if alt_raw else {}
 
         fallback_blocked = {
@@ -341,6 +371,31 @@ class RoutingService:
             [min_lng, max_lat],
             [min_lng, min_lat],  # close the ring
         ]
+
+    @staticmethod
+    def _routes_too_similar(coords_a: list, coords_b: list, threshold: float = 0.7) -> bool:
+        """Check if two routes share too many coordinates (are nearly the same path).
+        
+        Returns True if >threshold fraction of coords_b midpoints are within 0.001° of coords_a.
+        """
+        if not coords_a or not coords_b:
+            return True  # No data — assume similar, force waypoint
+        
+        # Sample every 3rd coordinate for efficiency
+        sample_b = coords_b[::3] if len(coords_b) > 6 else coords_b
+        if not sample_b:
+            return True
+        
+        matches = 0
+        for cb in sample_b:
+            for ca in coords_a:
+                if abs(cb[0] - ca[0]) < 0.001 and abs(cb[1] - ca[1]) < 0.001:
+                    matches += 1
+                    break
+        
+        similarity = matches / len(sample_b)
+        logger.info(f"Route similarity: {similarity:.2f} (threshold={threshold})")
+        return similarity > threshold
 
     def _coord_to_polygon(self, coord: tuple[float, float], radius: float) -> list:
         """Create a simple square polygon around a coordinate for avoidance."""
