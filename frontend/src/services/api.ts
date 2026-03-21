@@ -19,22 +19,31 @@ export const api = {
     fetch(`${API_BASE}/api/feed/baselines`).then((r) => r.json()),
 
   // Incidents
-  getIncidents: (city?: string, status?: string) => {
+  getIncidents: (city?: string, status: string = 'active') => {
     const params = new URLSearchParams();
+    params.set('status', status);
     if (city) params.set('city', city);
-    if (status) params.set('status', status);
     return fetch(`${API_BASE}/api/incidents?${params}`).then((r) => r.json());
   },
 
   getIncident: (id: string) =>
     fetch(`${API_BASE}/api/incidents/${id}`).then((r) => r.json()),
 
-  resolveIncident: (id: string) =>
-    fetch(`${API_BASE}/api/incidents/${id}/resolve`, { method: 'POST' }).then(
-      (r) => r.json(),
-    ),
+  resolveIncident: (id: string, operator: string) =>
+    fetch(`${API_BASE}/api/incidents/${id}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operator }),
+    }).then((r) => r.json()),
 
-  getLLMOutput: (id: string) =>
+  dismissIncident: (id: string, operator: string) =>
+    fetch(`${API_BASE}/api/incidents/${id}/dismiss`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operator }),
+    }).then((r) => r.json()),
+
+  getLLMOutput:(id: string) =>
     fetch(`${API_BASE}/api/incidents/${id}/llm-output`).then((r) => r.json()),
 
   getIncidentRoutes: async (incidentId: string) => {
@@ -100,6 +109,9 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     }).then((r) => r.json()),
+
+  getCongestionZones: (city: string = 'nyc') =>
+    fetch(`${API_BASE}/api/congestion/zones/default?city=${city}`).then((r) => r.json()),
 
   getDemoStreets: (city: string = 'nyc') =>
     fetch(`${API_BASE}/api/demo/streets?city=${city}`).then((r) => r.json()),

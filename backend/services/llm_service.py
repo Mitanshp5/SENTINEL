@@ -1,15 +1,17 @@
-import os
 import re
 import asyncio
 import logging
+import time
 from typing import Optional
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    """Manages LLM calls with Groq (primary), Gemini (fallback), OpenRouter (backup)."""
-    
+    """Multi-provider LLM service with Groq → Gemini → OpenRouter fallback."""
+
     def __init__(self, provider: str = "groq", model: str = "openai/gpt-oss-120b",
                  groq_model: str = "llama-3.1-8b-instant",
                  groq_key: str = "", gemini_key: str = "", openrouter_key: str = ""):
@@ -19,153 +21,181 @@ class LLMService:
         self.groq_key = groq_key
         self.gemini_key = gemini_key
         self.openrouter_key = openrouter_key
-    
-    async def generate(self, system_prompt: str, user_content: str, 
-                       max_tokens: int = 1500) -> Optional[str]:
-        """Generate LLM response using configured provider."""
-        providers = [self.provider] + [p for p in ["groq", "gemini", "openrouter"] if p != self.provider]
-        
-        for provider in providers:
+        self.providers = self._build_provider_list()
+        logger.info(f"LLM providers: {self.providers}")
+
+    def _build_provider_list(self) -> list[str]:
+        """Build ordered provider list: preferred provider first, then others."""
+        all_available = []
+        if self.groq_key:
+            all_available.append("groq")
+        if self.gemini_key:
+            all_available.append("gemini")
+        if self.openrouter_key:
+            all_available.append("openrouter")
+        # Put preferred provider first
+        if self.provider in all_available:
+            all_available.remove(self.provider)
+            all_available.insert(0, self.provider)
+        return all_available
+
+    async def generate(self, system_prompt: str, user_content: str,
+                       max_tokens: int = 1000) -> Optional[str]:
+        """Try each provider in order until one succeeds."""
+        t0 = time.time()
+        last_error = None
+
+        for provider in self.providers:
             try:
-                if provider == "groq" and self.groq_key:
-                    return await self._call_groq(system_prompt, user_content, max_tokens)
-                elif provider == "gemini" and self.gemini_key:
-                    return await self._call_gemini(system_prompt, user_content, max_tokens)
-                elif provider == "openrouter" and self.openrouter_key:
-                    return await self._call_openrouter(system_prompt, user_content, max_tokens)
+                if provider == "groq":
+                    result = await self._call_groq(system_prompt, user_content, max_tokens)
+                elif provider == "gemini":
+                    result = await self._call_gemini(system_prompt, user_content, max_tokens)
+                elif provider == "openrouter":
+                    result = await self._call_openrouter(system_prompt, user_content, max_tokens)
+                else:
+                    continue
+
+                if result:
+                    logger.info(f"LLM generated {len(result)} chars via {provider} in {time.time() - t0:.1f}s")
+                    return result
             except Exception as e:
+                last_error = e
                 logger.warning(f"LLM provider {provider} failed: {type(e).__name__}: {e}")
                 continue
-        
-        logger.error("All LLM providers failed")
+
+        logger.error(f"All LLM providers failed. Last error: {last_error}")
         return None
-    
-    async def _call_groq(self, system_prompt: str, user_content: str, 
-                         max_tokens: int) -> str:
-        from groq import Groq
-        
+
+    # ── Groq (official SDK, thread-wrapped for async) ──────────────────
+
+    async def _call_groq(self, system_prompt: str, user_content: str,
+                         max_tokens: int = 1000) -> str:
+        """Call Groq via their official SDK (wrapped in thread for async)."""
         def _sync_call():
+            from groq import Groq
             client = Groq(api_key=self.groq_key)
-            return client.chat.completions.create(
+            response = client.chat.completions.create(
                 model=self.groq_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
+                    {"role": "user", "content": user_content},
                 ],
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                temperature=0.3,
             )
-            
-        response = await asyncio.to_thread(_sync_call)
-        
-        result = response.choices[0].message.content
-        logger.info(f"Groq response: {len(result)} chars, "
-                    f"tokens: {response.usage.prompt_tokens}+{response.usage.completion_tokens}")
-        return result
-    
-    async def _call_gemini(self, system_prompt: str, user_content: str, 
-                           max_tokens: int) -> str:
-        import google.generativeai as genai
-        
-        genai.configure(api_key=self.gemini_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        
-        response = model.generate_content(
-            system_prompt + "\n\n" + user_content,
-            generation_config=genai.GenerationConfig(max_output_tokens=max_tokens)
-        )
-        
-        result = response.text
-        logger.info(f"Gemini response: {len(result)} chars")
-        return result
-    
-    async def _call_openrouter(self, system_prompt: str, user_content: str,
-                               max_tokens: int) -> str:
-        from openai import OpenAI
-        
+            return response.choices[0].message.content
+
+        return await asyncio.to_thread(_sync_call)
+
+    async def _call_groq_chat(self, messages: list[dict], max_tokens: int) -> str:
+        """Call Groq chat API via SDK (thread-wrapped)."""
         def _sync_call():
-            client = OpenAI(
-                base_url="https://openrouter.ai/api/v1",
-                api_key=self.openrouter_key
+            from groq import Groq
+            client = Groq(api_key=self.groq_key)
+            response = client.chat.completions.create(
+                model=self.groq_model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.3,
             )
-            return client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
-                ],
-                max_tokens=max_tokens
+            return response.choices[0].message.content
+
+        return await asyncio.to_thread(_sync_call)
+
+    # ── Gemini (official SDK, thread-wrapped for async) ────────────────
+
+    async def _call_gemini(self, system_prompt: str, user_content: str,
+                           max_tokens: int = 1000) -> str:
+        """Call Gemini via Google's official SDK (wrapped in thread for async)."""
+        def _sync_call():
+            import google.generativeai as genai
+            genai.configure(api_key=self.gemini_key)
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            combined = f"{system_prompt}\n\n{user_content}"
+            response = model.generate_content(
+                combined,
+                generation_config=genai.GenerationConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=0.3,
+                ),
             )
-        
+            return response.text
+
+        return await asyncio.to_thread(_sync_call)
+
+    # ── OpenRouter (httpx async, no blocking SDK) ─────────────────────
+
+    async def _call_openrouter(self, system_prompt: str, user_content: str,
+                               max_tokens: int = 1000) -> str:
+        """Call OpenRouter via httpx async (proper async, no blocking)."""
+        return await self._call_openrouter_raw([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ], max_tokens)
+
+    async def _call_openrouter_chat(self, messages: list[dict], max_tokens: int) -> str:
+        """Call OpenRouter chat via httpx async."""
+        return await self._call_openrouter_raw(messages, max_tokens)
+
+    async def _call_openrouter_raw(self, messages: list[dict], max_tokens: int) -> str:
+        """Shared OpenRouter call with retry logic."""
         for attempt in range(3):
             try:
-                response = await asyncio.to_thread(_sync_call)
-                result = response.choices[0].message.content
-                logger.info(f"OpenRouter response: {len(result)} chars")
-                return result
+                async with httpx.AsyncClient(timeout=45.0) as client:
+                    resp = await client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.openrouter_key}",
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": "https://sentinel-copilot.app",
+                        },
+                        json={
+                            "model": self.model,
+                            "messages": messages,
+                            "max_tokens": max_tokens,
+                            "temperature": 0.3,
+                        },
+                    )
+                    if not resp.is_success:
+                        logger.error(f"OpenRouter HTTP {resp.status_code}: {resp.text[:500]}")
+                        resp.raise_for_status()
+                    data = resp.json()
+                    return data["choices"][0]["message"]["content"]
             except Exception as e:
-                if "429" in str(e) and attempt < 2:
-                    wait = (attempt + 1) * 5
-                    logger.warning(f"OpenRouter 429 rate limited, retrying in {wait}s (attempt {attempt + 1}/3)")
-                    await asyncio.sleep(wait)
+                logger.warning(f"OpenRouter attempt {attempt + 1} failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2 * (attempt + 1))
                 else:
                     raise
-    
-    async def generate_chat_response(self, messages: list[dict], 
+
+    # ── Chat (multi-turn) ─────────────────────────────────────────────
+
+    async def generate_chat_response(self, messages: list[dict],
                                      max_tokens: int = 1000) -> Optional[str]:
         """Generate chat response from a multi-turn conversation."""
-        providers = [self.provider] + [p for p in ["groq", "gemini", "openrouter"] if p != self.provider]
-        
-        for provider in providers:
+        last_error = None
+        for provider in self.providers:
             try:
-                if provider == "groq" and self.groq_key:
+                if provider == "groq":
                     return await self._call_groq_chat(messages, max_tokens)
-                elif provider == "gemini" and self.gemini_key:
-                    # Gemini: concatenate messages
+                elif provider == "gemini":
                     full_text = "\n".join(f"[{m['role']}]: {m['content']}" for m in messages)
                     return await self._call_gemini("", full_text, max_tokens)
-                elif provider == "openrouter" and self.openrouter_key:
+                elif provider == "openrouter":
                     return await self._call_openrouter_chat(messages, max_tokens)
             except Exception as e:
+                last_error = e
                 logger.warning(f"Chat LLM provider {provider} failed: {type(e).__name__}: {e}")
                 continue
-        
-        logger.error("All LLM providers failed for chat")
+
+        logger.error(f"All LLM providers failed for chat. Last error: {last_error}")
         return None
-    
-    async def _call_groq_chat(self, messages: list[dict], max_tokens: int) -> str:
-        from groq import Groq
-        
-        client = Groq(api_key=self.groq_key)
-        response = client.chat.completions.create(
-            model=self.groq_model,
-            messages=messages,
-            max_tokens=max_tokens
-        )
-        return response.choices[0].message.content
-    
-    async def _call_openrouter_chat(self, messages: list[dict], max_tokens: int) -> str:
-        from openai import OpenAI
-        
-        client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=self.openrouter_key
-        )
-        
-        for attempt in range(3):
-            try:
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=max_tokens
-                )
-                return response.choices[0].message.content
-            except Exception as e:
-                if "429" in str(e) and attempt < 2:
-                    wait = (attempt + 1) * 5
-                    logger.warning(f"OpenRouter chat 429 rate limited, retrying in {wait}s (attempt {attempt + 1}/3)")
-                    await asyncio.sleep(wait)
-                else:
-                    raise
+
+    async def chat(self, system_prompt: str, user_content: str,
+                   max_tokens: int = 1000) -> Optional[str]:
+        """Alias for generate() used by chat endpoints."""
+        return await self.generate(system_prompt, user_content, max_tokens)
     
     @staticmethod
     def _parse_signal_retiming(text: str) -> dict:

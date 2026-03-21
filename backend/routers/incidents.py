@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel
 
 import db
 
@@ -24,7 +25,56 @@ def _serialize(doc: dict) -> dict:
         doc["detected_at"] = doc["detected_at"].isoformat()
     if "resolved_at" in doc and hasattr(doc["resolved_at"], 'isoformat'):
         doc["resolved_at"] = doc["resolved_at"].isoformat()
+    if "resolved_at" in doc and hasattr(doc["resolved_at"], 'isoformat'):
+        doc["resolved_at"] = doc["resolved_at"].isoformat()
     return doc
+
+class IncidentReport(BaseModel):
+    title: str
+    city: str
+    location_str: str
+    description: str
+
+class ResolveRequest(BaseModel):
+    operator: str
+
+@router.post("/report")
+async def report_incident(report: IncidentReport, request: Request):
+    """User-app endpoint to report an incident and queue it for operators."""
+    city = report.city.lower()
+    incident_doc = {
+        "title": report.title,
+        "city": city,
+        "status": "active",
+        "severity": "moderate",
+        "on_street": report.location_str,
+        "description": report.description,
+        "detected_at": datetime.now(timezone.utc).isoformat(),
+        "assigned_operator": None
+    }
+    
+    if db.incidents is None:
+        raise HTTPException(status_code=503, detail="Database offline")
+
+    # Insert
+    result = await db.incidents.insert_one(incident_doc)
+    incident_id = str(result.inserted_id)
+    incident_doc["_id"] = incident_id
+    
+    # Enqueue the incident
+    ws_manager = request.app.state.ws_manager
+    queue_manager = request.app.state.operator_queue
+    
+    assigned_op = await queue_manager.enqueue_incident(city, incident_id, ws_manager)
+    incident_doc["assigned_operator"] = assigned_op
+    
+    # Broadcast the new incident
+    await ws_manager.broadcast({
+        "type": "incident_detected",
+        "data": {**incident_doc}
+    })
+    
+    return {"status": "reported", "incident_id": incident_id, "assigned_operator": assigned_op}
 
 
 @router.get("/")
@@ -66,8 +116,8 @@ async def get_incident(incident_id: str):
 
 
 @router.post("/{incident_id}/resolve")
-async def resolve_incident(incident_id: str, request: Request):
-    """Mark an incident as resolved."""
+async def resolve_incident(incident_id: str, body: ResolveRequest, request: Request):
+    """Mark an incident as resolved — only the assigned operator can resolve."""
     if db.incidents is None:
         raise HTTPException(status_code=503, detail="Database offline")
     try:
@@ -75,22 +125,104 @@ async def resolve_incident(incident_id: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid incident ID format")
 
-    result = await db.incidents.update_one(
+    # Fetch the incident first
+    doc = await db.incidents.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    # Check operator authorization
+    assigned = doc.get("assigned_operator")
+    if assigned and assigned != body.operator:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only the assigned operator ({assigned}) can resolve this incident"
+        )
+
+    # Mark resolved
+    await db.incidents.update_one(
         {"_id": oid},
         {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat()}},
     )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Incident not found")
+
+    # Clear incident-generated congestion zone
+    if db.congestion_zones is not None:
+        await db.congestion_zones.delete_many({"incident_id": incident_id})
 
     # Broadcast resolution via WebSocket
     ws_manager = request.app.state.ws_manager
+
+    await ws_manager.broadcast({
+        "type": "congestion_cleared",
+        "data": {"zone_id": f"incident_{incident_id}"},
+    })
+
     await ws_manager.broadcast({
         "type": "incident_resolved",
         "data": {"incident_id": incident_id},
     })
 
-    logger.info(f"Incident {incident_id} resolved")
+    # Free the operator
+    if assigned:
+        queue_manager = request.app.state.operator_queue
+        await queue_manager.free_operator(doc.get("city"), assigned, ws_manager)
+
+    logger.info(f"Incident {incident_id} resolved by {body.operator}")
     return {"status": "resolved", "incident_id": incident_id}
+
+
+@router.post("/{incident_id}/dismiss")
+async def dismiss_incident(incident_id: str, body: ResolveRequest, request: Request):
+    """Mark an incident as dismissed (false alarm / bluff) — only assigned operator can dismiss."""
+    if db.incidents is None:
+        raise HTTPException(status_code=503, detail="Database offline")
+    try:
+        oid = ObjectId(incident_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid incident ID format")
+
+    doc = await db.incidents.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    assigned = doc.get("assigned_operator")
+    if assigned and assigned != body.operator:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only the assigned operator ({assigned}) can dismiss this incident"
+        )
+
+    await db.incidents.update_one(
+        {"_id": oid},
+        {"$set": {
+            "status": "dismissed",
+            "dismissed_at": datetime.now(timezone.utc).isoformat(),
+            "dismissed_by": body.operator,
+            "dismiss_reason": "false_alarm",
+        }},
+    )
+
+    # Clear incident-generated congestion zone
+    if db.congestion_zones is not None:
+        await db.congestion_zones.delete_many({"incident_id": incident_id})
+
+    ws_manager = request.app.state.ws_manager
+
+    await ws_manager.broadcast({
+        "type": "congestion_cleared",
+        "data": {"zone_id": f"incident_{incident_id}"},
+    })
+
+    await ws_manager.broadcast({
+        "type": "incident_resolved",
+        "data": {"incident_id": incident_id},
+    })
+
+    if assigned:
+        queue_manager = request.app.state.operator_queue
+        await queue_manager.free_operator(doc.get("city"), assigned, ws_manager)
+
+    logger.info(f"Incident {incident_id} dismissed by {body.operator} (false alarm)")
+    return {"status": "dismissed", "incident_id": incident_id}
 
 
 @router.get("/{incident_id}/routes")

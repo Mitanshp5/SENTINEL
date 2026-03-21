@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Tooltip, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Tooltip, Polyline, Polygon, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { useFeedStore, useIncidentStore } from '../../store';
 import { CameraPopup } from './CameraPopup';
@@ -36,6 +36,34 @@ const isNearBlockedRoute = (lat: number, lng: number, blockedCoords: number[][])
   return false;
 };
 
+const getIncidentAdjustedSpeed = (
+  segLat: number, segLng: number, speed: number,
+  activeIncidents: any[]
+): number => {
+  for (const inc of activeIncidents) {
+    const incLat = inc.location?.lat;
+    const incLng = inc.location?.lng;
+    if (incLat == null || incLng == null) continue;
+    const dist = Math.sqrt(
+      Math.pow(segLat - incLat, 2) + Math.pow(segLng - incLng, 2)
+    );
+
+    const severityConfig: Record<string, { radius: number; penalty: number }> = {
+      critical: { radius: 0.006, penalty: 0.1 },
+      major:    { radius: 0.004, penalty: 0.3 },
+      moderate: { radius: 0.003, penalty: 0.5 },
+      minor:    { radius: 0.002, penalty: 0.7 },
+    };
+    const config = severityConfig[inc.severity] || severityConfig.moderate;
+
+    if (dist < config.radius) {
+      const factor = config.penalty + (1 - config.penalty) * (dist / config.radius);
+      return speed * factor;
+    }
+  }
+  return speed;
+};
+
 const MapController: React.FC<{ center: [number, number]; zoom: number; city: string }> = ({ center, zoom, city }) => {
   const map = useMap();
   const prevCityRef = useRef<string>('');
@@ -56,7 +84,7 @@ const MapController: React.FC<{ center: [number, number]; zoom: number; city: st
 
 const TrafficMap: React.FC = () => {
   const { segments, cityCenter, city } = useFeedStore();
-  const { incidents, currentIncident, setCollisions, incidentRoutes } = useIncidentStore();
+  const { incidents, currentIncident, setCollisions, incidentRoutes, congestionZones } = useIncidentStore();
 
   const BIG_INTERSECTIONS = [
     { id: '1', name: "W 34th St & 7th Ave", lat: 40.7505, lng: -73.9904 },
@@ -111,15 +139,18 @@ const TrafficMap: React.FC = () => {
         <MapController center={mapCenter} zoom={mapZoom} city={city} />
 
         <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           attribution='&copy; CARTO'
         />
 
         {/* Traffic Speed Segments — only shown when there are active incidents */}
         {incidents.filter(i => i.status === 'active' && i.city === city).length > 0 && segments.map((seg) => {
+          const cityIncidents = incidents.filter(i => i.status === 'active' && i.city === city);
           const isBlocked = allBlockedCoords.length > 0 && isNearBlockedRoute(seg.lat, seg.lng, allBlockedCoords);
-          const color = isBlocked ? '#ef4444' : getSpeedColor(seg.speed);
-          const radius = isBlocked ? 9 : (seg.speed < 5 ? 8 : 6);
+          const adjustedSpeed = getIncidentAdjustedSpeed(seg.lat, seg.lng, seg.speed, cityIncidents);
+          const color = isBlocked ? '#ef4444' : getSpeedColor(adjustedSpeed);
+          const radius = isBlocked ? 9 : (adjustedSpeed < 5 ? 8 : 6);
+          const speedChanged = Math.abs(adjustedSpeed - seg.speed) > 0.5;
           return (
             <CircleMarker
               key={seg.link_id}
@@ -134,7 +165,7 @@ const TrafficMap: React.FC = () => {
             >
               <Tooltip direction="top" offset={[0, -6]} opacity={0.9}>
                 <span className="text-[10px] font-mono">
-                  {isBlocked ? '🔴 ' : ''}{seg.link_name} — {seg.speed.toFixed(0)} mph{isBlocked ? ' [BLOCKED]' : ''}
+                  {isBlocked ? '🔴 ' : ''}{seg.link_name} — {adjustedSpeed.toFixed(0)} mph{speedChanged ? ` (was ${seg.speed.toFixed(0)})` : ''}{isBlocked ? ' [BLOCKED]' : ''}
                 </span>
               </Tooltip>
             </CircleMarker>
@@ -145,7 +176,7 @@ const TrafficMap: React.FC = () => {
         {incidents.filter((inc) => inc.status === 'active' && inc.city === city).map((inc) => (
           <React.Fragment key={`incident-${inc.id}`}>
             <CircleMarker
-              center={inc.location.coordinates ? [inc.location.coordinates[1], inc.location.coordinates[0]] : [inc.location.lat, inc.location.lng]}
+              center={[inc.location.lat, inc.location.lng]}
               radius={14}
               pathOptions={{
                 color: '#ef4444',
@@ -156,7 +187,7 @@ const TrafficMap: React.FC = () => {
               }}
             />
             <CircleMarker
-              center={inc.location.coordinates ? [inc.location.coordinates[1], inc.location.coordinates[0]] : [inc.location.lat, inc.location.lng]}
+              center={[inc.location.lat, inc.location.lng]}
               radius={6}
               pathOptions={{
                 color: '#ef4444',
@@ -183,12 +214,12 @@ const TrafficMap: React.FC = () => {
             {routePair.blocked?.geometry?.coordinates && routePair.blocked.geometry.coordinates.length >= 2 && (
               <Polyline
                 positions={routePair.blocked.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number])}
-                pathOptions={{ color: '#ef4444', weight: 7, opacity: 0.85 }}
+                pathOptions={{ color: '#ef4444', weight: 7, opacity: 0.85, dashArray: '10,10' }}
               >
                 <Tooltip sticky>
-                  <span className="text-[10px] font-mono font-bold">
-                    🔴 BLOCKED: {(routePair.blocked.street_names || []).slice(0, 2).join(' → ') || 'Incident Road'}
-                    {routePair.blocked.total_length_km ? ` — ${routePair.blocked.total_length_km} km` : ''}
+                  <span className="text-[10px] font-mono">
+                    🔴 Congested Route — {routePair.blocked?.street_names?.join(' → ') || 'Blocked road'}
+                    {routePair.blocked?.total_length_km && ` • ${routePair.blocked.total_length_km} km`}
                   </span>
                 </Tooltip>
               </Polyline>
@@ -201,10 +232,10 @@ const TrafficMap: React.FC = () => {
                 pathOptions={{ color: '#22c55e', weight: 6, opacity: 0.9 }}
               >
                 <Tooltip sticky>
-                  <span className="text-[10px] font-mono font-bold">
-                    🟢 ALTERNATE: {(routePair.alternate.street_names || []).slice(0, 2).join(' → ') || 'Detour Route'}
-                    {routePair.alternate.total_length_km ? ` — ${routePair.alternate.total_length_km} km` : ''}
-                    {routePair.alternate.estimated_extra_minutes ? ` (+${routePair.alternate.estimated_extra_minutes} min)` : ''}
+                  <span className="text-[10px] font-mono">
+                    🟢 Alternate Route
+                    {routePair.alternate?.estimated_extra_minutes != null && ` • +${routePair.alternate.estimated_extra_minutes} min`}
+                    {routePair.alternate?.avg_speed_kmh && ` • ${routePair.alternate.avg_speed_kmh} km/h avg`}
                   </span>
                 </Tooltip>
               </Polyline>
@@ -237,6 +268,31 @@ const TrafficMap: React.FC = () => {
             )}
           </React.Fragment>
         ))}
+
+        {/* ═══ CONGESTION ZONES — permanent avoidance areas ═══ */}
+        {congestionZones
+          .filter((z: any) => z.city === city)
+          .map((zone: any) => (
+            zone.polygon && zone.polygon.length >= 4 && (
+              <Polygon
+                key={`czone-${zone.zone_id}`}
+                positions={zone.polygon.map((c: number[]) => [c[1], c[0]] as [number, number])}
+                pathOptions={{
+                  color: zone.severity === 'severe' ? '#f59e0b' : '#fbbf24',
+                  fillColor: zone.severity === 'severe' ? '#f59e0b' : '#fbbf24',
+                  fillOpacity: 0.15,
+                  weight: 2,
+                  dashArray: '6,4',
+                }}
+              >
+                <Tooltip sticky>
+                  <span className="text-[10px] font-mono">
+                    ⚠️ {zone.name} — {zone.severity} congestion zone
+                  </span>
+                </Tooltip>
+              </Polygon>
+            )
+          ))}
 
         {/* Collision markers removed — data used by LLM only, visual noise on map */}
 
