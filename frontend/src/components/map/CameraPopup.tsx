@@ -1,7 +1,17 @@
 import React, { useState } from 'react';
-import { Popup } from 'react-leaflet';
+import { Popup } from 'react-map-gl/mapbox';
 
-export const CameraPopup = ({ cam }: { cam: any }) => {
+interface CameraPopupProps {
+  cam: {
+    id: string;
+    name: string;
+    lat: number;
+    lng: number;
+  };
+  onClose: () => void;
+}
+
+export const CameraPopup: React.FC<CameraPopupProps> = ({ cam, onClose }) => {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
@@ -24,7 +34,7 @@ export const CameraPopup = ({ cam }: { cam: any }) => {
     formData.append('lat', cam.lat.toString());
     formData.append('lng', cam.lng.toString());
     formData.append('intersection_name', cam.name);
-    formData.append('city', 'nyc'); 
+    formData.append('city', 'nyc');
 
     try {
       const response = await fetch('http://localhost:8000/api/surveillance/upload', {
@@ -42,10 +52,17 @@ export const CameraPopup = ({ cam }: { cam: any }) => {
     }
   };
 
-  // We use -m-4 to offset the default Leaflet popup padding
   return (
-    <Popup minWidth={350} maxWidth={400}>
-      <div className="bg-[#111111] text-gray-200 font-mono -m-[14px] p-0 rounded-lg overflow-hidden border border-gray-700 shadow-2xl">
+    <Popup
+      longitude={cam.lng}
+      latitude={cam.lat}
+      anchor="bottom"
+      closeOnClick={false}
+      onClose={onClose}
+      className="camera-popup"
+      maxWidth="400px"
+    >
+      <div className="bg-[#111111] text-gray-200 font-mono p-0 rounded-lg overflow-hidden min-w-[350px]">
         <div className="flex justify-between items-center bg-[#0a0a0a] px-3 py-2 border-b border-gray-800">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />

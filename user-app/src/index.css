@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "leaflet/dist/leaflet.css";
 
 @theme {
   --color-brand-bg: #FAFAFA;
@@ -67,12 +66,16 @@ body, html, #root {
   box-shadow: 0 0 8px rgba(255, 90, 95, 0.5);
 }
 
-/* Leaflet Overrides */
-.leaflet-container {
-  background: #EAEAEA !important;
-  font-family: 'Inter', sans-serif;
+/* Mapbox GL light theme adjustments */
+.mapboxgl-map {
+  font-family: inherit;
 }
-.leaflet-control-attribution {
+
+.mapboxgl-ctrl-attrib {
+  display: none !important;
+}
+
+.mapboxgl-ctrl-logo {
   display: none !important;
 }
 
