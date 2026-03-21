@@ -4,7 +4,7 @@ import { api } from '../services/api';
 
 export const useWebSocket = () => {
   const { setSegments } = useFeedStore();
-  const { setIncident, setLLMOutput, setDiversionRoutes, setCollisions, clearIncident, addIncident, setCongestionZone, clearCongestionZone, setCongestionRoutes } = useIncidentStore();
+  const { setIncident, setLLMOutput, setDiversionRoutes, setCollisions, clearIncident, addIncident, setCongestionZone, clearCongestionZone, setCongestionRoutes, setIncidentRoutes } = useIncidentStore();
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -69,6 +69,18 @@ export const useWebSocket = () => {
               console.log('[WS] Congestion cleared:', msg.data.zone_id);
               clearCongestionZone(msg.data.zone_id);
               break;
+            case 'incident_routes': {
+              console.log('[WS] Incident routes received - blocked:',
+                msg.data.blocked?.geometry?.coordinates?.length || 0, 'pts, alternate:',
+                msg.data.alternate?.geometry?.coordinates?.length || 0, 'pts');
+              setIncidentRoutes(
+                msg.data.blocked,
+                msg.data.alternate,
+                msg.data.origin,
+                msg.data.destination,
+              );
+              break;
+            }
             case 'incident_resolved':
               clearIncident();
               break;
@@ -92,5 +104,5 @@ export const useWebSocket = () => {
       clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
-  }, [setSegments, setIncident, setLLMOutput, setDiversionRoutes, setCollisions, clearIncident, addIncident, setCongestionZone, clearCongestionZone, setCongestionRoutes]);
+  }, [setSegments, setIncident, setLLMOutput, setDiversionRoutes, setCollisions, clearIncident, addIncident, setCongestionZone, clearCongestionZone, setCongestionRoutes, setIncidentRoutes]);
 };

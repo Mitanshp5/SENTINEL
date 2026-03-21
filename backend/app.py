@@ -162,33 +162,49 @@ async def lifespan(app: FastAPI):
                     },
                 })
 
-            # 3. Compute diversion routes
-            diversions = await routing_service.compute_diversions_for_incident(
-                (lng, lat), city=city
-            )
+            # 3. Compute incident route pair: blocked (red) + alternate (green) — road-snapped via ORS
+            incident_routes = await routing_service.compute_incident_route_pair(lng, lat, city=city)
 
-            # 3b. Persist diversion routes to DB
-            if diversions and db.diversion_routes is not None:
+            # 3b. Persist incident routes to DB
+            if db.diversion_routes is not None:
                 try:
                     await db.diversion_routes.insert_one({
                         "city": city,
                         "incident_id": incident_id,
                         "blocked_location": {"type": "Point", "coordinates": [lng, lat]},
                         "computed_at": datetime.now(timezone.utc),
-                        "routes": diversions,
+                        "origin": incident_routes["origin"],
+                        "destination": incident_routes["destination"],
+                        "blocked_route": incident_routes["blocked"],
+                        "alternate_route": incident_routes["alternate"],
                     })
                 except Exception as e:
-                    logger.warning(f"Failed to save diversion routes: {e}")
+                    logger.warning(f"Failed to save incident routes: {e}")
 
-            # 3c. Broadcast diversion geometry for map overlay
-            if diversions:
-                await ws_manager.broadcast({
-                    "type": "diversion_routes",
-                    "data": {
-                        "incident_id": incident_id,
-                        "routes": diversions,
-                    },
-                })
+            # 3c. Broadcast immediately — NO button needed, auto-apply on frontend
+            await ws_manager.broadcast({
+                "type": "incident_routes",
+                "data": {
+                    "incident_id": incident_id,
+                    "origin": incident_routes["origin"],
+                    "destination": incident_routes["destination"],
+                    "blocked": incident_routes["blocked"],
+                    "alternate": incident_routes["alternate"],
+                },
+            })
+            logger.info(f"Incident routes broadcast: blocked={len(incident_routes['blocked'].get('geometry', {}).get('coordinates', []))} pts, alternate={len(incident_routes['alternate'].get('geometry', {}).get('coordinates', []))} pts")
+
+            # Keep diversions for LLM context (reuse existing field name for backward compat)
+            diversions = [
+                {
+                    "priority": 1,
+                    "name": "Alternate Route",
+                    "segment_names": incident_routes["alternate"].get("street_names", []),
+                    "geometry": incident_routes["alternate"]["geometry"],
+                    "total_length_km": incident_routes["alternate"].get("total_length_km", 0),
+                    "estimated_extra_minutes": incident_routes["alternate"].get("estimated_extra_minutes", 0),
+                }
+            ]
 
             # 4. Build prompt
             baselines = CITY_BASELINES.get(city, {})
@@ -230,6 +246,7 @@ async def lifespan(app: FastAPI):
                         **llm_doc,
                         "incident_id": incident_id,
                         "diversion_geometry": diversions if diversions else [],
+                        "incident_routes": incident_routes,
                     },
                 })
             else:
@@ -243,6 +260,7 @@ async def lifespan(app: FastAPI):
                         "alerts": {"vms": "LLM analysis unavailable — all providers rate limited", "radio": "", "social_media": ""},
                         "narrative_update": "LLM analysis could not be generated — all providers are currently rate limited. The system will retry on the next incident.",
                         "diversion_geometry": diversions if diversions else [],
+                        "incident_routes": incident_routes,
                     },
                 })
 
@@ -277,12 +295,39 @@ async def lifespan(app: FastAPI):
             # Get congestion location
             coords = zone.get("location", {}).get("coordinates", [0, 0])
             lng, lat = coords[0], coords[1]
-            
-            # Compute alternate routes around congested area
-            alt_routes = await routing_service.compute_diversions_for_incident(
-                (lng, lat), city=city
-            )
-            
+
+            # Save congestion zone to DB
+            if db.congestion_zones is not None:
+                try:
+                    zone_doc = {
+                        "zone_id": zone["zone_id"],
+                        "city": city,
+                        "type": "congestion",
+                        "status": "active",
+                        "severity": zone["severity"],
+                        "location": zone["location"],
+                        "primary_street": zone["primary_street"],
+                        "affected_segment_ids": zone.get("affected_segment_ids", []),
+                        "segments": zone.get("segments", []),
+                        "detected_at": zone.get("detected_at", datetime.now(timezone.utc).isoformat()),
+                    }
+                    await db.congestion_zones.insert_one(zone_doc)
+                    logger.info(f"Congestion zone saved: {zone['zone_id']}")
+                except Exception as e:
+                    logger.warning(f"Failed to save congestion zone: {e}")
+
+            # Compute road-snapped alternate route for congestion
+            congestion_routes = await routing_service.compute_incident_route_pair(lng, lat, city=city)
+            alt_routes = [
+                {
+                    "priority": 1,
+                    "name": "Congestion Alternate",
+                    "geometry": congestion_routes["alternate"]["geometry"],
+                    "total_length_km": congestion_routes["alternate"].get("total_length_km", 0),
+                    "estimated_extra_minutes": congestion_routes["alternate"].get("estimated_extra_minutes", 0),
+                }
+            ]
+
             # Broadcast congestion alert with routes
             await ws_manager.broadcast({
                 "type": "congestion_alert",
@@ -294,16 +339,29 @@ async def lifespan(app: FastAPI):
                     "location": zone["location"],
                     "segments": zone["segments"],
                     "detected_at": zone["detected_at"],
-                    "alternate_routes": alt_routes if alt_routes else [],
+                    "alternate_routes": alt_routes,
+                    "origin": congestion_routes["origin"],
+                    "destination": congestion_routes["destination"],
+                    "blocked_geometry": congestion_routes["blocked"]["geometry"],
                 },
             })
             logger.info(f"Congestion alert broadcast: {zone['primary_street']} with {len(alt_routes)} routes")
-            
+
         except Exception as e:
             logger.error(f"Congestion handler error: {e}", exc_info=True)
 
     async def _on_congestion_clear(zone: dict):
-        """Handle congestion cleared — notify frontend to remove overlay."""
+        """Handle congestion cleared — update DB and notify frontend."""
+        # Update DB status
+        if db.congestion_zones is not None:
+            try:
+                await db.congestion_zones.update_one(
+                    {"zone_id": zone["zone_id"]},
+                    {"$set": {"status": "cleared", "cleared_at": zone.get("cleared_at", "")}}
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update congestion zone in DB: {e}")
+
         await ws_manager.broadcast({
             "type": "congestion_cleared",
             "data": {

@@ -23,7 +23,7 @@ class RoutingService:
         origin/destination: (longitude, latitude) tuples.
         Returns GeoJSON FeatureCollection with route geometry and instructions.
         """
-        cache_key = f"{origin}_{destination}"
+        cache_key = f"{origin}_{destination}_{bool(avoid_coords)}"
         if cache_key in self._cache:
             return self._cache[cache_key]
         
@@ -45,7 +45,7 @@ class RoutingService:
             body["options"]["avoid_polygons"] = {
                 "type": "MultiPolygon",
                 "coordinates": [
-                    [self._coord_to_polygon(c, 0.001) for c in avoid_coords]
+                    [self._coord_to_polygon(c, 0.002) for c in avoid_coords]
                 ]
             }
         
@@ -99,6 +99,61 @@ class RoutingService:
             "street_names": street_names,
         }
     
+    async def compute_incident_route_pair(
+        self,
+        incident_lng: float,
+        incident_lat: float,
+        city: str = "nyc",
+    ) -> dict:
+        """
+        Compute blocked road (red) + best alternate route (green) for an incident.
+
+        Strategy:
+        - Origin = ~800m upstream of incident (diagonal offset)
+        - Destination = ~800m downstream of incident (diagonal offset)
+        - Blocked route = ORS direct path origin→destination (the road being blocked, shown RED)
+        - Alternate route = ORS path origin→destination AVOIDING incident point (shown GREEN)
+
+        Returns: {"blocked": {...}, "alternate": {...}, "origin": [lng, lat], "destination": [lng, lat]}
+        """
+        # Diagonal offset ~800m works for both N-S and E-W oriented roads
+        # 0.008° lat ≈ 890m, 0.009° lng ≈ 750m at NYC latitude (40.7°)
+        # For Chandigarh (30.7°): 0.009° lng ≈ 865m
+        lat_offset = 0.007
+        lng_offset = 0.009
+
+        origin = (round(incident_lng - lng_offset, 6), round(incident_lat - lat_offset, 6))
+        destination = (round(incident_lng + lng_offset, 6), round(incident_lat + lat_offset, 6))
+
+        logger.info(f"Computing incident route pair: origin={origin} dest={destination} incident=({incident_lng},{incident_lat})")
+
+        # Blocked road: direct route through the incident area (no avoidance)
+        blocked_raw = await self.get_diversion_route(origin, destination, avoid_coords=None)
+        blocked_info = self.extract_route_info(blocked_raw) if blocked_raw else {}
+
+        # Alternate route: avoid a 200m radius around the incident
+        alt_raw = await self.get_diversion_route(
+            origin, destination,
+            avoid_coords=[(incident_lng, incident_lat)]
+        )
+        alt_info = self.extract_route_info(alt_raw) if alt_raw else {}
+
+        return {
+            "origin": list(origin),
+            "destination": list(destination),
+            "blocked": {
+                "geometry": blocked_info.get("geometry", {"type": "LineString", "coordinates": [list(origin), [incident_lng, incident_lat], list(destination)]}),
+                "total_length_km": blocked_info.get("total_distance_km", 0),
+                "street_names": blocked_info.get("street_names", []),
+            },
+            "alternate": {
+                "geometry": alt_info.get("geometry", {"type": "LineString", "coordinates": [list(origin), list(destination)]}),
+                "total_length_km": alt_info.get("total_distance_km", 0),
+                "estimated_extra_minutes": alt_info.get("total_duration_min", 0),
+                "street_names": alt_info.get("street_names", []),
+            },
+        }
+
     async def compute_diversions_for_incident(
         self, incident_location: tuple[float, float],
         city: str = "nyc"

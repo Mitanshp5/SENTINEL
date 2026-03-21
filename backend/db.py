@@ -15,11 +15,12 @@ chat_history = None
 signal_baselines = None
 diversion_routes = None
 cctv_events = None
+congestion_zones = None
 
 
 async def connect_db():
     global client, db, incidents, feed_snapshots, llm_outputs, chat_history
-    global signal_baselines, diversion_routes, cctv_events
+    global signal_baselines, diversion_routes, cctv_events, congestion_zones
 
     settings = get_settings()
 
@@ -41,6 +42,7 @@ async def connect_db():
         signal_baselines = db["signal_baselines"]
         diversion_routes = db["diversion_routes"]
         cctv_events = db["cctv_events"]
+        congestion_zones = db["congestion_zones"]
 
         # Create indexes
         await incidents.create_index([("city", 1), ("status", 1)])
@@ -53,6 +55,9 @@ async def connect_db():
         await cctv_events.create_index([("city", 1), ("incident_id", 1)])
         await cctv_events.create_index([("camera_location", "2dsphere")])
         await cctv_events.create_index([("event_type", 1), ("detected_at", -1)])
+        await congestion_zones.create_index([("city", 1), ("status", 1)])
+        await congestion_zones.create_index([("location", "2dsphere")])
+        await congestion_zones.create_index([("detected_at", -1)])
 
         logger.info(f"Connected to MongoDB: {settings.mongodb_db_name}")
 

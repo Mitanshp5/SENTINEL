@@ -34,7 +34,7 @@ const MapController: React.FC<{ center: [number, number]; zoom: number }> = ({ c
 
 const TrafficMap: React.FC = () => {
   const { segments, cityCenter } = useFeedStore();
-  const { currentIncident, diversionRoutes, collisions, setCollisions, congestionZones, congestionRoutes } = useIncidentStore();
+  const { currentIncident, diversionRoutes, collisions, setCollisions, congestionZones, congestionRoutes, blockedRoute, alternateRoute, incidentRouteOrigin, incidentRouteDest } = useIncidentStore();
 
   useEffect(() => {
     if (currentIncident) {
@@ -120,58 +120,71 @@ const TrafficMap: React.FC = () => {
           </>
         )}
 
-        {/* Diversion Route Polylines — Auto-displayed */}
-        {diversionRoutes.map((route: any, idx: number) => {
-          const coords = route.geometry?.coordinates;
-          if (!coords || !Array.isArray(coords) || coords.length < 2) return null;
-          const positions = coords.map((c: number[]) => [c[1], c[0]] as [number, number]);
-          return (
-            <Polyline
-              key={`diversion-${idx}`}
-              positions={positions}
-              pathOptions={{
-                color: idx === 0 ? '#3b82f6' : '#06b6d4',
-                weight: idx === 0 ? 6 : 4,
-                opacity: 0.9,
-                dashArray: idx === 0 ? undefined : '12 8',
-              }}
-            >
-              <Tooltip sticky>
-                <span className="text-[10px] font-mono font-bold">
-                  🔀 {route.name || `DIVERSION ${idx + 1}`}
-                  {route.total_length_km ? ` — ${route.total_length_km} km` : ''}
-                  {route.estimated_extra_minutes ? ` (${route.estimated_extra_minutes} min)` : ''}
-                </span>
-              </Tooltip>
-            </Polyline>
-          );
-        })}
+        {/* ═══ INCIDENT ROUTES — Auto-displayed on incident detection ═══ */}
+        {/* Blocked Road (RED) — the road the incident is on */}
+        {blockedRoute?.geometry?.coordinates && blockedRoute.geometry.coordinates.length >= 2 && (
+          <Polyline
+            positions={blockedRoute.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number])}
+            pathOptions={{
+              color: '#ef4444',
+              weight: 7,
+              opacity: 0.85,
+            }}
+          >
+            <Tooltip sticky>
+              <span className="text-[10px] font-mono font-bold">
+                🔴 BLOCKED: {(blockedRoute.street_names || []).slice(0, 2).join(' → ') || 'Incident Road'}
+                {blockedRoute.total_length_km ? ` — ${blockedRoute.total_length_km} km` : ''}
+              </span>
+            </Tooltip>
+          </Polyline>
+        )}
 
-        {/* Diversion Route Start Markers */}
-        {diversionRoutes.map((route: any, idx: number) => {
-          const coords = route.geometry?.coordinates;
-          if (!coords || !Array.isArray(coords) || coords.length < 2) return null;
-          const startPos: [number, number] = [coords[0][1], coords[0][0]];
-          return (
-            <CircleMarker
-              key={`diversion-start-${idx}`}
-              center={startPos}
-              radius={8}
-              pathOptions={{
-                color: idx === 0 ? '#3b82f6' : '#06b6d4',
-                fillColor: idx === 0 ? '#3b82f6' : '#06b6d4',
-                fillOpacity: 1,
-                weight: 2,
-              }}
-            >
-              <Tooltip direction="top" offset={[0, -8]} permanent>
-                <span className="text-[9px] font-mono font-bold">
-                  {route.name || `DIV ${idx + 1}`}
-                </span>
-              </Tooltip>
-            </CircleMarker>
-          );
-        })}
+        {/* Alternate Route (GREEN) — the detour */}
+        {alternateRoute?.geometry?.coordinates && alternateRoute.geometry.coordinates.length >= 2 && (
+          <Polyline
+            positions={alternateRoute.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number])}
+            pathOptions={{
+              color: '#22c55e',
+              weight: 6,
+              opacity: 0.9,
+            }}
+          >
+            <Tooltip sticky>
+              <span className="text-[10px] font-mono font-bold">
+                🟢 ALTERNATE: {(alternateRoute.street_names || []).slice(0, 2).join(' → ') || 'Detour Route'}
+                {alternateRoute.total_length_km ? ` — ${alternateRoute.total_length_km} km` : ''}
+                {alternateRoute.estimated_extra_minutes ? ` (+${alternateRoute.estimated_extra_minutes} min)` : ''}
+              </span>
+            </Tooltip>
+          </Polyline>
+        )}
+
+        {/* Origin marker (where drivers should diverge) */}
+        {incidentRouteOrigin && (
+          <CircleMarker
+            center={[incidentRouteOrigin[1], incidentRouteOrigin[0]]}
+            radius={8}
+            pathOptions={{ color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }}
+          >
+            <Tooltip direction="top" offset={[0, -8]} permanent>
+              <span className="text-[9px] font-mono font-bold">↗ DIVERT HERE</span>
+            </Tooltip>
+          </CircleMarker>
+        )}
+
+        {/* Destination marker */}
+        {incidentRouteDest && (
+          <CircleMarker
+            center={[incidentRouteDest[1], incidentRouteDest[0]]}
+            radius={8}
+            pathOptions={{ color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }}
+          >
+            <Tooltip direction="top" offset={[0, -8]} permanent>
+              <span className="text-[9px] font-mono font-bold">✓ REJOIN</span>
+            </Tooltip>
+          </CircleMarker>
+        )}
 
         {/* Collision markers */}
         {collisions.map((c: any, idx: number) => {
@@ -232,6 +245,25 @@ const TrafficMap: React.FC = () => {
                 </Tooltip>
               </CircleMarker>
             </React.Fragment>
+          );
+        })}
+
+        {/* Congestion Blocked Roads (YELLOW) */}
+        {congestionZones.map((zone: any) => {
+          const coords = zone.blocked_geometry?.coordinates;
+          if (!coords || coords.length < 2) return null;
+          return (
+            <Polyline
+              key={`cong-blocked-${zone.zone_id}`}
+              positions={coords.map((c: number[]) => [c[1], c[0]] as [number, number])}
+              pathOptions={{ color: '#f59e0b', weight: 6, opacity: 0.85 }}
+            >
+              <Tooltip sticky>
+                <span className="text-[10px] font-mono font-bold">
+                  🚧 CONGESTED: {zone.primary_street}
+                </span>
+              </Tooltip>
+            </Polyline>
           );
         })}
 

@@ -10,6 +10,8 @@ interface FeedState {
   cityCenter: { lat: number; lng: number; zoom: number } | null;
   setCity: (city: 'nyc' | 'chandigarh') => void;
   setSegments: (segments: TrafficSegment[]) => void;
+  // Segments is typed as any[] internally to support _lastSeen tracking
+
   setBaselines: (baselines: Record<string, any>) => void;
   setCityCenter: (center: { lat: number; lng: number; zoom: number }) => void;
   switchCity: (city: 'nyc' | 'chandigarh') => Promise<void>;
@@ -24,8 +26,21 @@ export const useFeedStore = create<FeedState>((set) => ({
   baselines: {},
   cityCenter: null,
   setCity: (city) => set({ city, segments: [] }),
-  setSegments: (segments) =>
-    set({ segments, lastUpdate: new Date().toISOString() }),
+  setSegments: (newSegments) =>
+    set((state) => {
+      const now = Date.now();
+      const merged = new Map<string, any>();
+      for (const s of state.segments as any[]) {
+        merged.set(s.link_id, s);
+      }
+      for (const s of newSegments) {
+        merged.set(s.link_id, { ...s, _lastSeen: now });
+      }
+      const alive = Array.from(merged.values()).filter(
+        (s: any) => !s._lastSeen || now - s._lastSeen < 15000
+      );
+      return { segments: alive, lastUpdate: new Date().toISOString() };
+    }),
   setBaselines: (baselines) => set({ baselines }),
   setCityCenter: (cityCenter) => set({ cityCenter }),
   switchCity: async (city) => {
@@ -64,6 +79,10 @@ interface IncidentState {
   collisions: any[];
   congestionZones: any[];
   congestionRoutes: any[];
+  blockedRoute: any | null;
+  alternateRoute: any | null;
+  incidentRouteOrigin: number[] | null;
+  incidentRouteDest: number[] | null;
   setIncident: (incident: Incident | null) => void;
   setLLMOutput: (output: LLMOutput | null) => void;
   addIncident: (incident: Incident) => void;
@@ -73,6 +92,7 @@ interface IncidentState {
   setCongestionZone: (zone: any) => void;
   clearCongestionZone: (zoneId: string) => void;
   setCongestionRoutes: (routes: any[]) => void;
+  setIncidentRoutes: (blocked: any, alternate: any, origin: number[], dest: number[]) => void;
   fetchIncidents: (city?: string) => Promise<void>;
 }
 
@@ -84,7 +104,11 @@ export const useIncidentStore = create<IncidentState>((set) => ({
   collisions: [],
   congestionZones: [],
   congestionRoutes: [],
-  setIncident: (incident) =>
+  blockedRoute: null,
+  alternateRoute: null,
+  incidentRouteOrigin: null,
+  incidentRouteDest: null,
+  setIncident:(incident) =>
     set((state) => ({
       currentIncident: incident,
       incidents: incident
@@ -94,7 +118,18 @@ export const useIncidentStore = create<IncidentState>((set) => ({
   setLLMOutput: (output) => set({ llmOutput: output }),
   addIncident: (incident) =>
     set((state) => ({ incidents: [...state.incidents, incident] })),
-  clearIncident: () => set({ currentIncident: null, llmOutput: null, diversionRoutes: [], collisions: [], congestionZones: [], congestionRoutes: [] }),
+  clearIncident: () => set({
+    currentIncident: null,
+    llmOutput: null,
+    diversionRoutes: [],
+    collisions: [],
+    congestionZones: [],
+    congestionRoutes: [],
+    blockedRoute: null,
+    alternateRoute: null,
+    incidentRouteOrigin: null,
+    incidentRouteDest: null,
+  }),
   setDiversionRoutes: (routes) => set({ diversionRoutes: routes }),
   setCollisions: (collisions) => set({ collisions }),
   setCongestionZone: (zone) =>
@@ -110,7 +145,13 @@ export const useIncidentStore = create<IncidentState>((set) => ({
       congestionRoutes: state.congestionRoutes.filter((r: any) => r._zoneId !== zoneId),
     })),
   setCongestionRoutes: (routes) => set({ congestionRoutes: routes }),
-  fetchIncidents: async (city?: string) => {
+  setIncidentRoutes: (blocked, alternate, origin, dest) => set({
+    blockedRoute: blocked,
+    alternateRoute: alternate,
+    incidentRouteOrigin: origin,
+    incidentRouteDest: dest,
+  }),
+  fetchIncidents:async (city?: string) => {
     try {
       const data = await api.getIncidents(city);
       if (Array.isArray(data)) {
