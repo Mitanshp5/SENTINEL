@@ -13,7 +13,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     openrouter_api_key: str = ""
     llm_provider: str = "groq"  # groq | gemini | openrouter
-    llm_model: str = "llama-3.3-70b-versatile"
+    llm_model: str = "openai/gpt-oss-120b"
+    groq_model: str = "llama-3.1-8b-instant"  # Separate Groq-specific model
 
     # OpenRouteService
     ors_api_key: str = ""
@@ -23,7 +24,7 @@ class Settings(BaseSettings):
 
     # Feed Simulator
     feed_interval_seconds: float = 5.0
-    active_city: str = "nyc"  # nyc | chandigarh
+    active_city: str = "chandigarh"  # nyc | chandigarh
 
     # Server
     host: str = "0.0.0.0"

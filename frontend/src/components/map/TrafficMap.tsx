@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Tooltip, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { useFeedStore, useIncidentStore } from '../../store';
@@ -15,7 +15,7 @@ const DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-const NYC_CENTER: [number, number] = [40.7505, -73.9934];
+const NYC_CENTER: [number, number] = [30.7333, 76.7794]; // Updated to Chandigarh
 const DEFAULT_ZOOM = 15;
 
 const getSpeedColor = (speed: number): string => {
@@ -24,17 +24,42 @@ const getSpeedColor = (speed: number): string => {
   return '#22c55e';                 // green — free flow
 };
 
-const MapController: React.FC<{ center: [number, number]; zoom: number }> = ({ center, zoom }) => {
+const isNearBlockedRoute = (lat: number, lng: number, blockedCoords: number[][]): boolean => {
+  if (!blockedCoords || blockedCoords.length === 0) return false;
+  const threshold = 0.003; // ~330m proximity
+  for (const coord of blockedCoords) {
+    if (Math.abs(lat - coord[1]) < threshold && Math.abs(lng - coord[0]) < threshold) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const MapController: React.FC<{ center: [number, number]; zoom: number; city: string }> = ({ center, zoom, city }) => {
   const map = useMap();
+  const prevCityRef = useRef<string>('');
+  const mountedRef = useRef<boolean>(false);
+
   useEffect(() => {
-    map.setView(center, zoom);
-  }, [center, zoom, map]);
+    // Only call setView on initial mount OR when the city actually changes
+    // Do NOT re-zoom on incident detection, feed updates, or segment changes
+    if (!mountedRef.current || prevCityRef.current !== city) {
+      map.setView(center, zoom);
+      prevCityRef.current = city;
+      mountedRef.current = true;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [city]); // Intentionally only city in deps — center/zoom changes must NOT trigger setView
   return null;
 };
 
 const TrafficMap: React.FC = () => {
-  const { segments, cityCenter } = useFeedStore();
-  const { currentIncident, diversionRoutes, collisions, setCollisions } = useIncidentStore();
+  const { segments, cityCenter, city } = useFeedStore();
+  const { incidents, currentIncident, diversionRoutes, collisions, setCollisions, congestionZones, congestionRoutes, incidentRoutes } = useIncidentStore();
+  // AND gate: collect ALL blocked route coordinates from ALL incidents
+  const allBlockedCoords: number[][] = incidentRoutes.flatMap(
+    (r) => r.blocked?.geometry?.coordinates || []
+  );
 
   useEffect(() => {
     if (currentIncident) {
@@ -59,7 +84,7 @@ const TrafficMap: React.FC = () => {
         className="w-full h-full"
         zoomControl={false}
       >
-        <MapController center={mapCenter} zoom={mapZoom} />
+        <MapController center={mapCenter} zoom={mapZoom} city={city} />
 
         <TileLayer
           url="https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"
@@ -67,31 +92,36 @@ const TrafficMap: React.FC = () => {
         />
 
         {/* Traffic Speed Segments */}
-        {segments.map((seg) => (
-          <CircleMarker
-            key={seg.link_id}
-            center={[seg.lat, seg.lng]}
-            radius={seg.speed < 5 ? 8 : 6}
-            pathOptions={{
-              color: getSpeedColor(seg.speed),
-              fillColor: getSpeedColor(seg.speed),
-              fillOpacity: 0.85,
-              weight: 1,
-            }}
-          >
-            <Tooltip direction="top" offset={[0, -6]} opacity={0.9}>
-              <span className="text-[10px] font-mono">
-                {seg.link_name} — {seg.speed.toFixed(0)} mph
-              </span>
-            </Tooltip>
-          </CircleMarker>
-        ))}
-
-        {/* Incident Marker with pulsing effect */}
-        {currentIncident && (
-          <>
+        {segments.map((seg) => {
+          const isBlocked = allBlockedCoords.length > 0 && isNearBlockedRoute(seg.lat, seg.lng, allBlockedCoords);
+          const color = isBlocked ? '#ef4444' : getSpeedColor(seg.speed);
+          const radius = isBlocked ? 9 : (seg.speed < 5 ? 8 : 6);
+          return (
             <CircleMarker
-              center={[currentIncident.location.lat, currentIncident.location.lng]}
+              key={seg.link_id}
+              center={[seg.lat, seg.lng]}
+              radius={radius}
+              pathOptions={{
+                color,
+                fillColor: color,
+                fillOpacity: 0.85,
+                weight: isBlocked ? 2 : 1,
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -6]} opacity={0.9}>
+                <span className="text-[10px] font-mono">
+                  {isBlocked ? '🔴 ' : ''}{seg.link_name} — {seg.speed.toFixed(0)} mph{isBlocked ? ' [BLOCKED]' : ''}
+                </span>
+              </Tooltip>
+            </CircleMarker>
+          );
+        })}
+
+        {/* Incident Markers — ALL active incidents with pulsing effect */}
+        {incidents.filter((inc) => inc.status === 'active').map((inc) => (
+          <React.Fragment key={`incident-${inc.id}`}>
+            <CircleMarker
+              center={[inc.location.lat, inc.location.lng]}
               radius={14}
               pathOptions={{
                 color: '#ef4444',
@@ -102,7 +132,7 @@ const TrafficMap: React.FC = () => {
               }}
             />
             <CircleMarker
-              center={[currentIncident.location.lat, currentIncident.location.lng]}
+              center={[inc.location.lat, inc.location.lng]}
               radius={6}
               pathOptions={{
                 color: '#ef4444',
@@ -113,38 +143,74 @@ const TrafficMap: React.FC = () => {
             >
               <Tooltip direction="top" offset={[0, -8]} opacity={0.95} permanent>
                 <span className="text-[10px] font-mono font-bold">
-                  INCIDENT: {currentIncident.on_street}
+                  INCIDENT: {inc.on_street}
                 </span>
               </Tooltip>
             </CircleMarker>
-          </>
-        )}
+          </React.Fragment>
+        ))}
 
-        {/* Diversion Route Polylines */}
-        {diversionRoutes.map((route: any, idx: number) => {
-          const coords = route.geometry?.coordinates;
-          if (!coords || !Array.isArray(coords)) return null;
-          const positions = coords.map((c: number[]) => [c[1], c[0]] as [number, number]);
-          return (
-            <Polyline
-              key={`diversion-${idx}`}
-              positions={positions}
-              pathOptions={{
-                color: idx === 0 ? '#3b82f6' : '#60a5fa',
-                weight: 4,
-                opacity: 0.8,
-                dashArray: idx === 0 ? undefined : '10 6',
-              }}
-            >
-              <Tooltip sticky>
-                <span className="text-[10px] font-mono">
-                  {route.name || `Diversion ${idx + 1}`}
-                  {route.distance_km ? ` — ${route.distance_km.toFixed(1)} km` : ''}
-                </span>
-              </Tooltip>
-            </Polyline>
-          );
-        })}
+        {/* ═══ INCIDENT ROUTES — ALL active incident route pairs ═══ */}
+        {incidentRoutes.map((routePair) => (
+          <React.Fragment key={`routes-${routePair.incidentId}`}>
+            {/* Blocked Road (RED) */}
+            {routePair.blocked?.geometry?.coordinates && routePair.blocked.geometry.coordinates.length >= 2 && (
+              <Polyline
+                positions={routePair.blocked.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number])}
+                pathOptions={{ color: '#ef4444', weight: 7, opacity: 0.85 }}
+              >
+                <Tooltip sticky>
+                  <span className="text-[10px] font-mono font-bold">
+                    🔴 BLOCKED: {(routePair.blocked.street_names || []).slice(0, 2).join(' → ') || 'Incident Road'}
+                    {routePair.blocked.total_length_km ? ` — ${routePair.blocked.total_length_km} km` : ''}
+                  </span>
+                </Tooltip>
+              </Polyline>
+            )}
+
+            {/* Alternate Route (GREEN) */}
+            {routePair.alternate?.geometry?.coordinates && routePair.alternate.geometry.coordinates.length >= 2 && (
+              <Polyline
+                positions={routePair.alternate.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number])}
+                pathOptions={{ color: '#22c55e', weight: 6, opacity: 0.9 }}
+              >
+                <Tooltip sticky>
+                  <span className="text-[10px] font-mono font-bold">
+                    🟢 ALTERNATE: {(routePair.alternate.street_names || []).slice(0, 2).join(' → ') || 'Detour Route'}
+                    {routePair.alternate.total_length_km ? ` — ${routePair.alternate.total_length_km} km` : ''}
+                    {routePair.alternate.estimated_extra_minutes ? ` (+${routePair.alternate.estimated_extra_minutes} min)` : ''}
+                  </span>
+                </Tooltip>
+              </Polyline>
+            )}
+
+            {/* Origin marker — DIVERT HERE */}
+            {routePair.origin && (
+              <CircleMarker
+                center={[routePair.origin[1], routePair.origin[0]]}
+                radius={8}
+                pathOptions={{ color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }}
+              >
+                <Tooltip direction="top" offset={[0, -8]} permanent>
+                  <span className="text-[9px] font-mono font-bold">↗ DIVERT HERE</span>
+                </Tooltip>
+              </CircleMarker>
+            )}
+
+            {/* Destination marker — REJOIN */}
+            {routePair.destination && (
+              <CircleMarker
+                center={[routePair.destination[1], routePair.destination[0]]}
+                radius={8}
+                pathOptions={{ color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }}
+              >
+                <Tooltip direction="top" offset={[0, -8]} permanent>
+                  <span className="text-[9px] font-mono font-bold">✓ REJOIN</span>
+                </Tooltip>
+              </CircleMarker>
+            )}
+          </React.Fragment>
+        ))}
 
         {/* Collision markers */}
         {collisions.map((c: any, idx: number) => {
@@ -167,6 +233,89 @@ const TrafficMap: React.FC = () => {
                 </span>
               </Tooltip>
             </CircleMarker>
+          );
+        })}
+
+        {/* Congestion Zone Markers — amber pulsing */}
+        {congestionZones.map((zone: any) => {
+          const lat = zone.location?.coordinates?.[1];
+          const lng = zone.location?.coordinates?.[0];
+          if (!lat || !lng) return null;
+          return (
+            <React.Fragment key={`congestion-zone-${zone.zone_id}`}>
+              <CircleMarker
+                center={[lat, lng]}
+                radius={16}
+                pathOptions={{
+                  color: zone.severity === 'severe' ? '#ef4444' : '#f59e0b',
+                  fillColor: zone.severity === 'severe' ? '#ef4444' : '#f59e0b',
+                  fillOpacity: 0.15,
+                  weight: 2,
+                  className: 'animate-pulse',
+                }}
+              />
+              <CircleMarker
+                center={[lat, lng]}
+                radius={7}
+                pathOptions={{
+                  color: zone.severity === 'severe' ? '#ef4444' : '#f59e0b',
+                  fillColor: zone.severity === 'severe' ? '#ef4444' : '#f59e0b',
+                  fillOpacity: 0.9,
+                  weight: 2,
+                }}
+              >
+                <Tooltip direction="top" offset={[0, -8]} opacity={0.95} permanent>
+                  <span className="text-[9px] font-mono font-bold">
+                    🚧 CONGESTION: {zone.primary_street}
+                  </span>
+                </Tooltip>
+              </CircleMarker>
+            </React.Fragment>
+          );
+        })}
+
+        {/* Congestion Blocked Roads (YELLOW) */}
+        {congestionZones.map((zone: any) => {
+          const coords = zone.blocked_geometry?.coordinates;
+          if (!coords || coords.length < 2) return null;
+          return (
+            <Polyline
+              key={`cong-blocked-${zone.zone_id}`}
+              positions={coords.map((c: number[]) => [c[1], c[0]] as [number, number])}
+              pathOptions={{ color: '#f59e0b', weight: 6, opacity: 0.85 }}
+            >
+              <Tooltip sticky>
+                <span className="text-[10px] font-mono font-bold">
+                  🚧 CONGESTED: {zone.primary_street}
+                </span>
+              </Tooltip>
+            </Polyline>
+          );
+        })}
+
+        {/* Congestion Alternate Route Polylines — amber/orange */}
+        {congestionRoutes.map((route: any, idx: number) => {
+          const coords = route.geometry?.coordinates;
+          if (!coords || !Array.isArray(coords) || coords.length < 2) return null;
+          const positions = coords.map((c: number[]) => [c[1], c[0]] as [number, number]);
+          return (
+            <Polyline
+              key={`congestion-route-${idx}`}
+              positions={positions}
+              pathOptions={{
+                color: '#f59e0b',
+                weight: 5,
+                opacity: 0.85,
+                dashArray: '10 6',
+              }}
+            >
+              <Tooltip sticky>
+                <span className="text-[10px] font-mono font-bold">
+                  🚧 ALT ROUTE: {route.name || `Route ${idx + 1}`}
+                  {route.total_length_km ? ` — ${route.total_length_km} km` : ''}
+                </span>
+              </Tooltip>
+            </Polyline>
           );
         })}
 

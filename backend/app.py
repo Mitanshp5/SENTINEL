@@ -14,12 +14,13 @@ from db import connect_db, close_db
 import db
 from services.feed_simulator import FeedSimulator
 from services.incident_detector import IncidentDetector
+from services.congestion_detector import CongestionDetector
 from services.collision_service import CollisionService
 from services.routing_service import RoutingService
 from services.llm_service import LLMService
 from services.prompt_builder import PromptBuilder
 from data.signal_baselines import CITY_BASELINES, CITY_CENTERS
-from routers import incidents, feed, collisions, websocket as ws_router, chat, llm
+from routers import incidents, feed, collisions, websocket as ws_router, chat, llm, demo, congestion
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,11 +71,13 @@ async def lifespan(app: FastAPI):
     # Instantiate services
     feed_simulator = FeedSimulator(data_dir="data", app_token=settings.nyc_app_token)
     incident_detector = IncidentDetector()
+    congestion_detector = CongestionDetector()
     collision_service = CollisionService(app_token=settings.nyc_app_token)
     routing_service = RoutingService(api_key=settings.ors_api_key)
     llm_service = LLMService(
         provider=settings.llm_provider,
         model=settings.llm_model,
+        groq_model=settings.groq_model,
         groq_key=settings.groq_api_key,
         gemini_key=settings.gemini_api_key,
         openrouter_key=settings.openrouter_api_key,
@@ -85,6 +88,7 @@ async def lifespan(app: FastAPI):
     # Store on app.state for router access
     app.state.feed_simulator = feed_simulator
     app.state.incident_detector = incident_detector
+    app.state.congestion_detector = congestion_detector
     app.state.collision_service = collision_service
     app.state.routing_service = routing_service
     app.state.llm_service = llm_service
@@ -99,6 +103,7 @@ async def lifespan(app: FastAPI):
     async def _on_frame(segments: list[dict]):
         """Forward every feed frame to the incident detector and broadcast."""
         await incident_detector.process_frame(segments)
+        await congestion_detector.process_frame(segments)
         await ws_manager.broadcast({
             "type": "feed_update",
             "data": {
@@ -132,6 +137,9 @@ async def lifespan(app: FastAPI):
                 incident_id = str(result.inserted_id)
             logger.info(f"Incident saved: {incident_id}")
 
+            # Store _id back so resolve callbacks can reference it
+            incident["_id"] = incident_id
+
             # Broadcast incident detection
             await ws_manager.broadcast({
                 "type": "incident_detected",
@@ -141,36 +149,62 @@ async def lifespan(app: FastAPI):
             # 2. Fetch nearby collisions
             coords = incident.get("location", {}).get("coordinates", [0, 0])
             lng, lat = coords[0], coords[1]
-            collisions_data = await collision_service.get_nearby_collisions(lat, lng)
+            collisions_data = await collision_service.get_nearby_collisions(lat, lng, city=city)
             collision_context = collision_service.get_collision_context_for_llm(collisions_data)
 
-            # 3. Compute diversion routes
-            diversions = await routing_service.compute_diversions_for_incident(
-                (lng, lat), city=city
-            )
+            # Broadcast collisions for map overlay
+            if collisions_data:
+                await ws_manager.broadcast({
+                    "type": "collisions",
+                    "data": {
+                        "incident_id": incident_id,
+                        "collisions": collisions_data,
+                    },
+                })
 
-            # 3b. Persist diversion routes to DB
-            if diversions and db.diversion_routes is not None:
+            # 3. Compute incident route pair: blocked (red) + alternate (green) — road-snapped via ORS
+            incident_routes = await routing_service.compute_incident_route_pair(lng, lat, city=city)
+
+            # 3b. Persist incident routes to DB
+            if db.diversion_routes is not None:
                 try:
                     await db.diversion_routes.insert_one({
                         "city": city,
                         "incident_id": incident_id,
                         "blocked_location": {"type": "Point", "coordinates": [lng, lat]},
                         "computed_at": datetime.now(timezone.utc),
-                        "routes": diversions,
+                        "origin": incident_routes["origin"],
+                        "destination": incident_routes["destination"],
+                        "blocked_route": incident_routes["blocked"],
+                        "alternate_route": incident_routes["alternate"],
                     })
                 except Exception as e:
-                    logger.warning(f"Failed to save diversion routes: {e}")
+                    logger.warning(f"Failed to save incident routes: {e}")
 
-            # 3c. Broadcast diversion geometry for map overlay
-            if diversions:
-                await ws_manager.broadcast({
-                    "type": "diversion_routes",
-                    "data": {
-                        "incident_id": incident_id,
-                        "routes": diversions,
-                    },
-                })
+            # 3c. Broadcast immediately — NO button needed, auto-apply on frontend
+            await ws_manager.broadcast({
+                "type": "incident_routes",
+                "data": {
+                    "incident_id": incident_id,
+                    "origin": incident_routes["origin"],
+                    "destination": incident_routes["destination"],
+                    "blocked": incident_routes["blocked"],
+                    "alternate": incident_routes["alternate"],
+                },
+            })
+            logger.info(f"Incident routes broadcast: blocked={len(incident_routes['blocked'].get('geometry', {}).get('coordinates', []))} pts, alternate={len(incident_routes['alternate'].get('geometry', {}).get('coordinates', []))} pts")
+
+            # Keep diversions for LLM context (reuse existing field name for backward compat)
+            diversions = [
+                {
+                    "priority": 1,
+                    "name": "Alternate Route",
+                    "segment_names": incident_routes["alternate"].get("street_names", []),
+                    "geometry": incident_routes["alternate"]["geometry"],
+                    "total_length_km": incident_routes["alternate"].get("total_length_km", 0),
+                    "estimated_extra_minutes": incident_routes["alternate"].get("estimated_extra_minutes", 0),
+                }
+            ]
 
             # 4. Build prompt
             baselines = CITY_BASELINES.get(city, {})
@@ -194,12 +228,12 @@ async def lifespan(app: FastAPI):
                 # 7. Save LLM output to DB
                 llm_doc = {
                     "incident_id": incident_id,
-                    "signal_retiming": parsed.get("signal_retiming", ""),
-                    "diversions": parsed.get("diversions", ""),
+                    "signal_retiming": parsed.get("signal_retiming", {"intersections": [], "raw_text": ""}),
+                    "diversions": parsed.get("diversions", {"routes": [], "raw_text": ""}),
                     "alerts": parsed.get("alerts", {}),
                     "narrative_update": parsed.get("narrative_update", ""),
                     "cctv_summary": parsed.get("cctv_summary", ""),
-                    "created_at": datetime.now(timezone.utc),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                 }
                 if db.llm_outputs is not None:
                     await db.llm_outputs.insert_one(llm_doc)
@@ -212,16 +246,143 @@ async def lifespan(app: FastAPI):
                         **llm_doc,
                         "incident_id": incident_id,
                         "diversion_geometry": diversions if diversions else [],
+                        "incident_routes": incident_routes,
                     },
                 })
             else:
                 logger.warning("LLM returned no output for incident")
+                await ws_manager.broadcast({
+                    "type": "llm_output",
+                    "data": {
+                        "incident_id": incident_id,
+                        "signal_retiming": {"intersections": [], "raw_text": ""},
+                        "diversions": {"routes": [], "raw_text": ""},
+                        "alerts": {"vms": "LLM analysis unavailable — all providers rate limited", "radio": "", "social_media": ""},
+                        "narrative_update": "LLM analysis could not be generated — all providers are currently rate limited. The system will retry on the next incident.",
+                        "diversion_geometry": diversions if diversions else [],
+                        "incident_routes": incident_routes,
+                    },
+                })
 
         except Exception as e:
             logger.error(f"Incident handler error: {e}", exc_info=True)
 
+    async def _on_resolve(incident: dict):
+        """Handle incident resolution."""
+        incident_id = incident.get("_id", "unknown")
+        # Update DB
+        if db.incidents is not None and incident_id != "unknown":
+            try:
+                from bson import ObjectId
+                await db.incidents.update_one(
+                    {"_id": ObjectId(incident_id)},
+                    {"$set": {"status": "resolved", "resolved_at": incident.get("resolved_at")}},
+                )
+            except Exception:
+                pass
+        # Broadcast
+        await ws_manager.broadcast({
+            "type": "incident_resolved",
+            "data": {"incident_id": incident_id, "resolved_at": incident.get("resolved_at", "")},
+        })
+        logger.info(f"Incident resolved broadcast: {incident_id}")
+
+    async def _on_congestion(zone: dict):
+        """Handle congestion zone detection — compute alternate routes and broadcast."""
+        city = feed_simulator.active_city
+        zone["city"] = city
+        try:
+            # Get congestion location
+            coords = zone.get("location", {}).get("coordinates", [0, 0])
+            lng, lat = coords[0], coords[1]
+
+            # Save congestion zone to DB
+            if db.congestion_zones is not None:
+                try:
+                    zone_doc = {
+                        "zone_id": zone["zone_id"],
+                        "city": city,
+                        "type": "congestion",
+                        "status": "active",
+                        "severity": zone["severity"],
+                        "location": zone["location"],
+                        "primary_street": zone["primary_street"],
+                        "affected_segment_ids": zone.get("affected_segment_ids", []),
+                        "segments": zone.get("segments", []),
+                        "detected_at": zone.get("detected_at", datetime.now(timezone.utc).isoformat()),
+                    }
+                    await db.congestion_zones.insert_one(zone_doc)
+                    logger.info(f"Congestion zone saved: {zone['zone_id']}")
+                except Exception as e:
+                    logger.warning(f"Failed to save congestion zone: {e}")
+
+            # Use segment-aware routing for congestion (entry/exit from bounding box of congested segments)
+            congestion_routes = await routing_service.compute_congestion_route_pair(
+                zone.get("segments", []), city=city
+            )
+            alt_routes = [
+                {
+                    "priority": 1,
+                    "name": "Congestion Alternate",
+                    "geometry": congestion_routes["alternate"]["geometry"],
+                    "total_length_km": congestion_routes["alternate"].get("total_length_km", 0),
+                    "estimated_extra_minutes": congestion_routes["alternate"].get("estimated_extra_minutes", 0),
+                }
+            ]
+
+            # Broadcast congestion alert with routes
+            await ws_manager.broadcast({
+                "type": "congestion_alert",
+                "data": {
+                    "zone_id": zone["zone_id"],
+                    "city": city,
+                    "severity": zone["severity"],
+                    "primary_street": zone["primary_street"],
+                    "location": zone["location"],
+                    "segments": zone["segments"],
+                    "detected_at": zone["detected_at"],
+                    "alternate_routes": alt_routes,
+                    "origin": congestion_routes["origin"],
+                    "destination": congestion_routes["destination"],
+                    "blocked_geometry": congestion_routes["blocked"]["geometry"],
+                },
+            })
+            logger.info(f"Congestion alert broadcast: {zone['primary_street']} with {len(alt_routes)} routes")
+
+        except Exception as e:
+            logger.error(f"Congestion handler error: {e}", exc_info=True)
+
+    async def _on_congestion_clear(zone: dict):
+        """Handle congestion cleared — update DB and notify frontend."""
+        # Update DB status
+        if db.congestion_zones is not None:
+            try:
+                await db.congestion_zones.update_one(
+                    {"zone_id": zone["zone_id"]},
+                    {"$set": {"status": "cleared", "cleared_at": zone.get("cleared_at", "")}}
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update congestion zone in DB: {e}")
+
+        await ws_manager.broadcast({
+            "type": "congestion_cleared",
+            "data": {
+                "zone_id": zone["zone_id"],
+                "cleared_at": zone.get("cleared_at", ""),
+            },
+        })
+        logger.info(f"Congestion cleared broadcast: {zone.get('primary_street', '')}")
+
     feed_simulator.on_frame(_on_frame)
     incident_detector.on_incident(_on_incident)
+    incident_detector.on_resolve(_on_resolve)
+    feed_simulator.on_loop_end(incident_detector.reset)
+    congestion_detector.on_congestion(_on_congestion)
+    congestion_detector.on_clear(_on_congestion_clear)
+    feed_simulator.on_loop_end(congestion_detector.reset)
+
+    # Expose pipeline for demo injection endpoint
+    app.state.on_incident = _on_incident
 
     # Load city data and start feed
     await feed_simulator.load_city(settings.active_city)
@@ -264,6 +425,8 @@ app.include_router(collisions.router, prefix="/api/collisions", tags=["collision
 app.include_router(ws_router.router, prefix="/ws", tags=["websocket"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(llm.router, prefix="/api/llm", tags=["llm"])
+app.include_router(demo.router, prefix="/api/demo", tags=["demo"])
+app.include_router(congestion.router, prefix="/api/congestion", tags=["congestion"])
 
 
 @app.get("/")
