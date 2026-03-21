@@ -15,16 +15,41 @@ class CollisionService:
         self.app_token = app_token
         self._cache: dict[str, list[dict]] = {}
     
+    def _get_chandigarh_collisions(self, lat: float, lng: float, radius_deg: float = 0.01) -> list[dict]:
+        """Load synthetic Chandigarh collision data filtered by proximity."""
+        import json
+        from pathlib import Path
+        data_file = Path(__file__).parent.parent / "data" / "chandigarh_collisions.json"
+        if not data_file.exists():
+            return []
+        try:
+            with open(data_file, encoding="utf-8") as f:
+                all_collisions = json.load(f)
+            nearby = []
+            for c in all_collisions:
+                try:
+                    c_lat = float(c.get("latitude") or 0)
+                    c_lng = float(c.get("longitude") or 0)
+                    if c_lat and c_lng and abs(c_lat - lat) <= radius_deg and abs(c_lng - lng) <= radius_deg:
+                        nearby.append(c)
+                except (ValueError, TypeError):
+                    continue
+            logger.info(f"Found {len(nearby)} Chandigarh collisions near ({lat}, {lng})")
+            return nearby[:100]
+        except Exception as e:
+            logger.warning(f"Failed to load Chandigarh collisions: {e}")
+            return []
+
     async def get_nearby_collisions(
-        self, lat: float, lng: float, 
+        self, lat: float, lng: float,
         radius_deg: float = 0.005,
         days_back: int = 30,
-        limit: int = 500
+        limit: int = 500,
+        city: str = "nyc"
     ) -> list[dict]:
-        """
-        Fetch recent collisions near a coordinate.
-        radius_deg ≈ 500m at NYC latitude.
-        """
+        """Fetch nearby collisions — NYC API for nyc, synthetic file for chandigarh."""
+        if city == "chandigarh":
+            return self._get_chandigarh_collisions(lat, lng, radius_deg)
         cache_key = f"{lat:.4f},{lng:.4f},{radius_deg},{days_back}"
         if cache_key in self._cache:
             return self._cache[cache_key]

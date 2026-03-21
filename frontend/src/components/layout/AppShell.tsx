@@ -14,7 +14,7 @@ interface AppShellProps {
 const AppShell: React.FC<AppShellProps> = ({ leftPanel, centerPanel, rightPanel }) => {
   const [currentTime, setCurrentTime] = useState(new Date());
   const { city, fetchCityInfo, fetchBaselines, lastUpdate } = useFeedStore();
-  const { fetchIncidents, currentIncident } = useIncidentStore();
+  const { fetchIncidents, currentIncident, incidents } = useIncidentStore();
   const [notification, setNotification] = useState<string | null>(null);
 
   useEffect(() => {
@@ -73,9 +73,9 @@ const AppShell: React.FC<AppShellProps> = ({ leftPanel, centerPanel, rightPanel 
             className={`ml-2 h-2 w-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}
             title={isConnected ? 'Live feed connected' : 'No live data'}
           />
-          {currentIncident && (
+          {incidents.filter((i: any) => i.status === 'active').length > 0 && (
             <span className="ml-2 px-2 py-0.5 bg-scada-red text-scada-bg text-[9px] font-mono font-bold uppercase">
-              1 ACTIVE
+              {incidents.filter((i: any) => i.status === 'active').length} ACTIVE
             </span>
           )}
         </div>

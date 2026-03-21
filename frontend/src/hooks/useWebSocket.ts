@@ -4,7 +4,12 @@ import { api } from '../services/api';
 
 export const useWebSocket = () => {
   const { setSegments } = useFeedStore();
-  const { setIncident, setLLMOutput, setDiversionRoutes, setCollisions, clearIncident, addIncident, setCongestionZone, clearCongestionZone, setCongestionRoutes, setIncidentRoutes, updateIncidentAssignment } = useIncidentStore();
+  // Keep both: our updateIncidentAssignment + incoming resolveIncident
+  const {
+    setIncident, setLLMOutput, setDiversionRoutes, setCollisions,
+    addIncident, setCongestionZone, clearCongestionZone, setCongestionRoutes,
+    setIncidentRoutes, resolveIncident, updateIncidentAssignment,
+  } = useIncidentStore();
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -23,6 +28,7 @@ export const useWebSocket = () => {
               setSegments(msg.data.segments);
               break;
             case 'incident_detected':
+              setCollisions([]);
               setIncident({
                 id: msg.data._id || msg.data.id || 'unknown',
                 city: msg.data.city,
@@ -74,10 +80,12 @@ export const useWebSocket = () => {
               clearCongestionZone(msg.data.zone_id);
               break;
             case 'incident_routes': {
-              console.log('[WS] Incident routes received - blocked:',
+              const routeIncidentId = msg.data.incident_id || 'unknown';
+              console.log('[WS] Incident routes received for', routeIncidentId, '- blocked:',
                 msg.data.blocked?.geometry?.coordinates?.length || 0, 'pts, alternate:',
                 msg.data.alternate?.geometry?.coordinates?.length || 0, 'pts');
               setIncidentRoutes(
+                routeIncidentId,
                 msg.data.blocked,
                 msg.data.alternate,
                 msg.data.origin,
@@ -85,9 +93,12 @@ export const useWebSocket = () => {
               );
               break;
             }
-            case 'incident_resolved':
-              clearIncident();
+            case 'incident_resolved': {
+              const resolvedId = msg.data.incident_id || msg.data._id || 'unknown';
+              console.log('[WS] Incident resolved:', resolvedId);
+              resolveIncident(resolvedId);
               break;
+            }
           }
         } catch (e) {
           console.error('[WS] Parse error:', e);
@@ -108,5 +119,7 @@ export const useWebSocket = () => {
       clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
-  }, [setSegments, setIncident, setLLMOutput, setDiversionRoutes, setCollisions, clearIncident, addIncident, setCongestionZone, clearCongestionZone, setCongestionRoutes, setIncidentRoutes, updateIncidentAssignment]);
+  }, [setSegments, setIncident, setLLMOutput, setDiversionRoutes, setCollisions,
+      resolveIncident, updateIncidentAssignment, addIncident,
+      setCongestionZone, clearCongestionZone, setCongestionRoutes, setIncidentRoutes]);
 };
