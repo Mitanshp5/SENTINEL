@@ -294,13 +294,13 @@ class RoutingService:
 
         if any(kw in street_lower for kw in ["ave", "avenue", "broadway", "blvd", "boulevard"]):
             # N-S oriented road — offset in latitude, tiny lng offset
-            lat_offset = 0.005   # ~550m along the road
-            lng_offset = 0.0005  # ~42m across (keeps it on the same road)
+            lat_offset = 0.008   # ~880m along the road
+            lng_offset = 0.0008  # ~67m across (keeps it on the same road)
             road_direction = "ns"
         else:
             # E-W oriented road (streets) or default — offset in longitude
-            lat_offset = 0.0005  # ~55m across
-            lng_offset = 0.005   # ~420m along the road
+            lat_offset = 0.0008  # ~88m across
+            lng_offset = 0.008   # ~670m along the road
             road_direction = "ew"
 
         raw_origin = (round(incident_lng - lng_offset, 6), round(incident_lat - lat_offset, 6))
@@ -313,10 +313,10 @@ class RoutingService:
 
         congestion_polys = list(extra_avoid_polygons) if extra_avoid_polygons else []
 
-        # Larger avoidance box: ±0.003° (~330m) — ensures alternate diverges before incident
+        # Larger avoidance box: ±0.005° (~550m) — ensures alternate diverges before incident
         incident_corridor = self._bounding_box_polygon(
-            incident_lng - 0.003, incident_lat - 0.003,
-            incident_lng + 0.003, incident_lat + 0.003,
+            incident_lng - 0.005, incident_lat - 0.005,
+            incident_lng + 0.005, incident_lat + 0.005,
         )
 
         all_avoid_polys = [incident_corridor] + congestion_polys
@@ -346,7 +346,7 @@ class RoutingService:
                 blk_coords = blocked_raw.get("features", [{}])[0].get("geometry", {}).get("coordinates", [])
                 if self._routes_too_similar(blk_coords, alt_coords):
                     logger.info("Alternate too similar — trying perpendicular waypoints")
-                    wp_offset = 0.005  # ~550m perpendicular push (2-3 blocks)
+                    wp_offset = 0.007  # ~770m perpendicular push (3-4 blocks)
 
                     if road_direction == "ew":
                         # E-W road: push north and south
@@ -452,7 +452,7 @@ class RoutingService:
         lat_span = max_lat - min_lat
         lng_span = max_lng - min_lng
 
-        offset = 0.008  # ~900m upstream/downstream of the congested zone
+        offset = 0.012  # ~1.3km upstream/downstream of the congested zone
 
         if lat_span >= lng_span:
             # N-S oriented road — offset along latitude
@@ -471,17 +471,17 @@ class RoutingService:
             f"zone={len(congested_segments)} segments ({lat_span:.4f}°lat × {lng_span:.4f}°lng)"
         )
 
-        # Build corridor polygon (with 0.004° padding = ~440m) - larger to ensure separation
+        # Build corridor polygon (with 0.006° padding = ~660m) - larger to ensure separation
         corridor_polygon = self._bounding_box_polygon(
-            min_lng - 0.004, min_lat - 0.004,
-            max_lng + 0.004, max_lat + 0.004
+            min_lng - 0.006, min_lat - 0.006,
+            max_lng + 0.006, max_lat + 0.006
         )
 
         # Forced perpendicular waypoint to ensure ORS uses a different road
         if lat_span >= lng_span:  # N-S road → offset in longitude
-            raw_waypoint = (round(center_lng + 0.007, 6), round(center_lat, 6))
+            raw_waypoint = (round(center_lng + 0.010, 6), round(center_lat, 6))
         else:  # E-W road → offset in latitude
-            raw_waypoint = (round(center_lng, 6), round(center_lat + 0.007, 6))
+            raw_waypoint = (round(center_lng, 6), round(center_lat + 0.010, 6))
         
         waypoint = await self.snap_to_road(raw_waypoint)
 
@@ -540,6 +540,112 @@ class RoutingService:
                 "street_names": alt_info.get("street_names", []),
             },
         }
+
+    async def compute_consolidated_routes(
+        self,
+        incidents: list[dict],
+        city: str = "nyc",
+        proximity_threshold: float = 0.005,  # ~550m - incidents within this are grouped
+    ) -> list[dict]:
+        """
+        Consolidate nearby incidents into grouped route pairs.
+        
+        Returns list of consolidated route groups, each containing:
+        - incident_ids: list of incident IDs in this group
+        - blocked/alternate geometry covering all incidents in group
+        """
+        if not incidents:
+            return []
+        
+        # Extract coordinates
+        coords = []
+        for inc in incidents:
+            loc = inc.get("location", {})
+            if isinstance(loc, dict):
+                lng = loc.get("lng") or (loc.get("coordinates", [0, 0])[0])
+                lat = loc.get("lat") or (loc.get("coordinates", [0, 0])[1])
+            else:
+                continue
+            coords.append({
+                "id": inc.get("id") or str(inc.get("_id")),
+                "lng": lng,
+                "lat": lat,
+                "on_street": inc.get("on_street", ""),
+            })
+        
+        if not coords:
+            return []
+        
+        # Group nearby incidents using simple clustering
+        groups = []
+        used = set()
+        
+        for i, c1 in enumerate(coords):
+            if c1["id"] in used:
+                continue
+            
+            group = [c1]
+            used.add(c1["id"])
+            
+            for j, c2 in enumerate(coords):
+                if c2["id"] in used:
+                    continue
+                # Check if within proximity threshold
+                dist = ((c1["lng"] - c2["lng"])**2 + (c1["lat"] - c2["lat"])**2) ** 0.5
+                if dist <= proximity_threshold:
+                    group.append(c2)
+                    used.add(c2["id"])
+            
+            groups.append(group)
+        
+        # Generate consolidated routes for each group
+        results = []
+        for group in groups:
+            if len(group) == 1:
+                # Single incident - use standard route pair
+                inc = group[0]
+                route_pair = await self.compute_incident_route_pair(
+                    inc["lng"], inc["lat"], city, inc["on_street"]
+                )
+                route_pair["incident_ids"] = [inc["id"]]
+                route_pair["is_consolidated"] = False
+                results.append(route_pair)
+            else:
+                # Multiple incidents - compute bounding box route
+                lngs = [c["lng"] for c in group]
+                lats = [c["lat"] for c in group]
+                
+                center_lng = sum(lngs) / len(lngs)
+                center_lat = sum(lats) / len(lats)
+                
+                # Span of the group
+                lng_span = max(lngs) - min(lngs)
+                lat_span = max(lats) - min(lats)
+                
+                # Determine primary street (most common)
+                streets = [c["on_street"] for c in group if c["on_street"]]
+                primary_street = streets[0] if streets else ""
+                
+                # Expand to cover all incidents with padding
+                padding = 0.003  # ~330m extra padding
+                
+                route_pair = await self.compute_incident_route_pair(
+                    center_lng, center_lat, city, primary_street,
+                    extra_avoid_polygons=[
+                        self._bounding_box_polygon(
+                            min(lngs) - padding, min(lats) - padding,
+                            max(lngs) + padding, max(lats) + padding,
+                        )
+                    ]
+                )
+                route_pair["incident_ids"] = [c["id"] for c in group]
+                route_pair["is_consolidated"] = True
+                route_pair["group_center"] = [center_lng, center_lat]
+                results.append(route_pair)
+                
+                logger.info(f"Consolidated {len(group)} incidents into single route pair")
+        
+        return results
 
     async def compute_diversions_for_incident(
         self, incident_location: tuple[float, float],
@@ -614,7 +720,7 @@ class RoutingService:
         ]
 
     @staticmethod
-    def _routes_too_similar(coords_a: list, coords_b: list, threshold: float = 0.7) -> bool:
+    def _routes_too_similar(coords_a: list, coords_b: list, threshold: float = 0.5) -> bool:
         """Check if two routes share too many coordinates (are nearly the same path).
         
         Returns True if >threshold fraction of coords_b midpoints are within 0.001° of coords_a.

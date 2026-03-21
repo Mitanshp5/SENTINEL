@@ -118,3 +118,21 @@ body {
   border-top: 1px solid #374151 !important;
   border-left: 1px solid #374151 !important;
 }
+
+/* Route glow effects */
+.route-alternate {
+  filter: url(#route-glow-green);
+}
+
+.route-consolidated {
+  filter: url(#route-glow-purple);
+}
+
+.route-blocked {
+  animation: route-pulse 2s ease-in-out infinite;
+}
+
+@keyframes route-pulse {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 0.5; }
+}

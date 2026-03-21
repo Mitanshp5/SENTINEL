@@ -96,6 +96,28 @@ class ConnectionManager:
 
 
 # ---------------------------------------------------------------------------
+# Helper: convert segment point to line geometry
+# ---------------------------------------------------------------------------
+
+def _segment_to_line_geometry(lat: float, lng: float, link_name: str, length_deg: float = 0.001):
+    """
+    Create a short line geometry centered on a segment point.
+    Detects road direction from link_name:
+      - Avenues/Broadway → N-S (offset latitude)
+      - Streets → E-W (offset longitude)
+    Returns [[lng1, lat1], [lng2, lat2]]
+    """
+    link_lower = link_name.lower() if link_name else ""
+    # N-S roads: avenues, broadway
+    if "ave" in link_lower or "avenue" in link_lower or "broadway" in link_lower:
+        # Offset latitude for N-S direction
+        return [[lng, lat - length_deg / 2], [lng, lat + length_deg / 2]]
+    else:
+        # E-W roads (streets, etc): offset longitude
+        return [[lng - length_deg / 2, lat], [lng + length_deg / 2, lat]]
+
+
+# ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
 
@@ -446,10 +468,14 @@ async def lifespan(app: FastAPI):
             }
             radius = severity_radius.get(severity, 0.003)
 
+            # Create segment geometry for the incident point
+            on_street = incident.get("on_street", "unknown")
+            incident_segment_geometry = _segment_to_line_geometry(lat, lng, on_street, length_deg=0.001)
+
             incident_zone = {
                 "zone_id": f"incident_{incident_id}",
                 "city": city,
-                "name": f"Incident zone — {incident.get('on_street', 'unknown')}",
+                "name": f"Incident zone — {on_street}",
                 "severity": "severe" if severity in ("critical", "major") else "moderate",
                 "center": [lng, lat],
                 "polygon": [
@@ -462,6 +488,14 @@ async def lifespan(app: FastAPI):
                 "source": "incident",
                 "status": "active",
                 "incident_id": incident_id,
+                "segment_geometries": [
+                    {
+                        "segment_id": f"incident_{incident_id}_seg",
+                        "name": on_street,
+                        "speed": 0,  # Blocked due to incident
+                        "geometry": incident_segment_geometry,
+                    }
+                ],
             }
 
             if db.congestion_zones is not None:
@@ -615,6 +649,22 @@ async def lifespan(app: FastAPI):
             ]
 
             # Broadcast congestion alert with routes
+            # Build segment geometries for road-following overlays
+            segment_geometries = [
+                {
+                    "segment_id": seg.get("link_id", ""),
+                    "name": seg.get("link_name", ""),
+                    "speed": seg.get("speed", 0),
+                    "geometry": _segment_to_line_geometry(
+                        seg.get("lat", 0),
+                        seg.get("lng", 0),
+                        seg.get("link_name", ""),
+                        length_deg=0.001
+                    ),
+                }
+                for seg in zone.get("segments", [])
+            ]
+
             await ws_manager.broadcast_to_city(city, {
                 "type": "congestion_alert",
                 "data": {
@@ -624,6 +674,7 @@ async def lifespan(app: FastAPI):
                     "primary_street": zone["primary_street"],
                     "location": zone["location"],
                     "segments": zone["segments"],
+                    "segment_geometries": segment_geometries,
                     "detected_at": zone["detected_at"],
                     "alternate_routes": alt_routes,
                     "origin": congestion_routes["origin"],

@@ -88,6 +88,10 @@ interface IncidentRoutePair {
   alternate: any;
   origin: number[];
   destination: number[];
+  // Consolidated route fields
+  incident_ids?: string[];
+  is_consolidated?: boolean;
+  group_center?: number[];
 }
 
 interface IncidentState {
