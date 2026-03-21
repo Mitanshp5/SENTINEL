@@ -1,0 +1,81 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+@theme {
+  --color-brand-bg: #FAFAFA;
+  --color-brand-bg-alt: #FFFFFF;
+  --color-brand-accent: #FF5A5F;
+  --color-brand-accent-hover: #E0484D;
+  --color-brand-secondary: #1A1A1A;
+  --color-brand-highlight: #A3B18A;
+  --color-brand-lavender: #CDB4DB;
+  
+  --color-brand-glass: rgba(255, 255, 255, 0.85);
+  --color-brand-glass-border: rgba(0, 0, 0, 0.04);
+}
+
+:root {
+  background-color: var(--color-brand-bg);
+  color: var(--color-brand-secondary);
+  font-family: 'Inter', 'Poppins', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body, html, #root {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Glassmorphism utility */
+.glass-panel {
+  background: var(--color-brand-glass);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--color-brand-glass-border);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
+}
+
+/* Hide scrollbar for clean mobile look */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Animations */
+@keyframes blink {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.9); }
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--color-brand-accent);
+  display: inline-block;
+  animation: blink 2s infinite ease-in-out;
+  box-shadow: 0 0 8px rgba(255, 90, 95, 0.5);
+}
+
+/* Leaflet Overrides */
+.leaflet-container {
+  background: #EAEAEA !important;
+  font-family: 'Inter', sans-serif;
+}
+.leaflet-control-attribution {
+  display: none !important;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 20px);
+}
