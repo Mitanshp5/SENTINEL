@@ -46,6 +46,8 @@ const AppShell: React.FC<AppShellProps> = ({ leftPanel, centerPanel, rightPanel 
       setNotification(`🚨 INCIDENT DETECTED: ${currentIncident.severity.toUpperCase()} at ${currentIncident.on_street}`);
       const timer = setTimeout(() => setNotification(null), 6000);
       return () => clearTimeout(timer);
+    } else {
+      setNotification(null);
     }
   }, [currentIncident?.id]);
 

@@ -146,6 +146,25 @@ async def resolve_incident(incident_id: str, request: Request):
     return {"status": "resolved", "incident_id": incident_id}
 
 
+@router.get("/{incident_id}/routes")
+async def get_incident_routes(incident_id: str):
+    """Return stored routes for an incident from the diversion_routes collection."""
+    if db.diversion_routes is None:
+        return {"incident_id": incident_id, "blocked": None, "alternate": None, "origin": None, "destination": None}
+
+    route_doc = await db.diversion_routes.find_one({"incident_id": incident_id})
+    if not route_doc:
+        return {"incident_id": incident_id, "blocked": None, "alternate": None, "origin": None, "destination": None}
+
+    return {
+        "incident_id": incident_id,
+        "blocked": route_doc.get("blocked_route"),
+        "alternate": route_doc.get("alternate_route"),
+        "origin": route_doc.get("origin"),
+        "destination": route_doc.get("destination"),
+    }
+
+
 @router.get("/{incident_id}/llm-output")
 async def get_llm_output(incident_id: str):
     """Get the latest LLM output for an incident."""

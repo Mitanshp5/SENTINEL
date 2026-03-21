@@ -46,7 +46,6 @@ class RoutingService:
         body = {
             "coordinates": coords,
             "instructions": True,
-            "extra_info": ["roadaccessrestrictions"],
             "options": {
                 "avoid_features": ["tollways"]
             }
@@ -76,6 +75,8 @@ class RoutingService:
                         },
                         json=body
                     )
+                    if not response.is_success:
+                        logger.error(f"ORS HTTP {response.status_code}: {response.text}")
                     response.raise_for_status()
                     result = response.json()
                 
