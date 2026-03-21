@@ -4,7 +4,7 @@ import {
   CheckCircle2, Search, ChevronDown
 } from 'lucide-react';
 import { api } from '../../services/api';
-import { useFeedStore } from '../../store';
+import { useFeedStore, useIncidentStore } from '../../store';
 
 // ─── City Streets ─────────────────────────────────────
 const CITY_STREETS: Record<string, string[]> = {
@@ -96,6 +96,7 @@ const StreetSearch: React.FC<{
 // ─── Main Sidebar ────────────────────────────────────
 const Sidebar: React.FC = () => {
   const { city } = useFeedStore();
+  const { setIncidents } = useIncidentStore();
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [location, setLocation] = useState('');
   const [title, setTitle] = useState('Traffic Collision');
@@ -110,7 +111,10 @@ const Sidebar: React.FC = () => {
   const fetchLiveIncidents = async () => {
     try {
       const data = await api.getIncidents(city, 'active');
-      if (Array.isArray(data)) setLiveIncidents(data);
+      if (Array.isArray(data)) {
+        setLiveIncidents(data);
+        setIncidents(data);
+      }
     } catch { /* silent */ }
   };
 
@@ -223,11 +227,6 @@ const Sidebar: React.FC = () => {
                       <Clock className="w-3.5 h-3.5 text-gray-400" />
                       <span>{formatTime(inc.detected_at)}</span>
                     </div>
-                    {inc.assigned_operator && (
-                      <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-blue-50 text-blue-600 border border-blue-100">
-                        {inc.assigned_operator.split(' ')[0]}
-                      </span>
-                    )}
                   </div>
                 </div>
               </div>

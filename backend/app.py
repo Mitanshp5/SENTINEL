@@ -163,6 +163,10 @@ async def lifespan(app: FastAPI):
     app.state.operator_queue = operator_queue
     app.state.active_city = settings.active_city
 
+    # Reconcile queue state from DB — assigns unassigned active incidents to operators
+    logger.info("Running operator queue reconciliation from DB...")
+    await operator_queue.reconcile_from_db(ws_manager)
+
     # ---- wire callbacks ----
 
     frame_counter = {"count": 0}

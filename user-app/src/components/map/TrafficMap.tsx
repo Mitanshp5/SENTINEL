@@ -33,7 +33,7 @@ const MapController: React.FC<{ center: [number, number]; zoom: number }> = ({ c
 
 const TrafficMap: React.FC = () => {
   const { segments, cityCenter } = useFeedStore();
-  const { currentIncident, diversionRoutes } = useIncidentStore();
+  const { incidents, diversionRoutes } = useIncidentStore();
 
   const mapCenter: [number, number] = cityCenter
     ? [cityCenter.lat, cityCenter.lng]
@@ -92,10 +92,11 @@ const TrafficMap: React.FC = () => {
           );
         })}
 
-        {/* Dynamic Incident Marker Minimal */}
-        {currentIncident && (
+        {/* Dynamic Incident Markers Minimal */}
+        {incidents.map((inc: any) => (
           <CircleMarker
-            center={[currentIncident.location.lat, currentIncident.location.lng]}
+            key={inc.id || inc._id}
+            center={[inc.location?.lat ?? inc.location?.coordinates?.[1] ?? 0, inc.location?.lng ?? inc.location?.coordinates?.[0] ?? 0]}
             radius={6}
             pathOptions={{
               color: '#FF5A5F',
@@ -104,7 +105,7 @@ const TrafficMap: React.FC = () => {
               weight: 2,
             }}
           />
-        )}
+        ))}
       </MapContainer>
     </div>
   );

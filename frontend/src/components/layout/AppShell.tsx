@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { ShieldAlert, Activity, Map as MapIcon, MessageSquare, Bell } from 'lucide-react';
 import OperatorDropdown from './OperatorDropdown';
+import DemoControls from '../demo/DemoControls';
 import { useFeedStore, useIncidentStore } from '../../store';
 import { api } from '../../services/api';
 
@@ -94,6 +95,10 @@ const AppShell: React.FC<AppShellProps> = ({ leftPanel, centerPanel, rightPanel 
               {incidents.filter((i: any) => i.status === 'active').length} ACTIVE
             </span>
           )}
+          {/* Demo injector — inline in navbar */}
+          <div className="ml-4 border-l border-scada-border pl-4">
+            <DemoControls />
+          </div>
         </div>
 
         {/* Center: Active City Indicator (read-only — change via operator dropdown) */}

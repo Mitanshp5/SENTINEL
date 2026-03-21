@@ -19,50 +19,7 @@ L.Marker.prototype.options.icon = DefaultIcon;
 const NYC_CENTER: [number, number] = [40.7128, -74.0060]; // NYC fallback center
 const DEFAULT_ZOOM = 15;
 
-const getSpeedColor = (speed: number): string => {
-  if (speed < 5) return '#ef4444';  // red — blocked
-  if (speed < 15) return '#eab308'; // yellow — slow
-  return '#22c55e';                 // green — free flow
-};
 
-const isNearBlockedRoute = (lat: number, lng: number, blockedCoords: number[][]): boolean => {
-  if (!blockedCoords || blockedCoords.length === 0) return false;
-  const threshold = 0.003; // ~330m proximity
-  for (const coord of blockedCoords) {
-    if (Math.abs(lat - coord[1]) < threshold && Math.abs(lng - coord[0]) < threshold) {
-      return true;
-    }
-  }
-  return false;
-};
-
-const getIncidentAdjustedSpeed = (
-  segLat: number, segLng: number, speed: number,
-  activeIncidents: any[]
-): number => {
-  for (const inc of activeIncidents) {
-    const incLat = inc.location?.lat;
-    const incLng = inc.location?.lng;
-    if (incLat == null || incLng == null) continue;
-    const dist = Math.sqrt(
-      Math.pow(segLat - incLat, 2) + Math.pow(segLng - incLng, 2)
-    );
-
-    const severityConfig: Record<string, { radius: number; penalty: number }> = {
-      critical: { radius: 0.006, penalty: 0.1 },
-      major:    { radius: 0.004, penalty: 0.3 },
-      moderate: { radius: 0.003, penalty: 0.5 },
-      minor:    { radius: 0.002, penalty: 0.7 },
-    };
-    const config = severityConfig[inc.severity] || severityConfig.moderate;
-
-    if (dist < config.radius) {
-      const factor = config.penalty + (1 - config.penalty) * (dist / config.radius);
-      return speed * factor;
-    }
-  }
-  return speed;
-};
 
 const MapController: React.FC<{ center: [number, number]; zoom: number; city: string }> = ({ center, zoom, city }) => {
   const map = useMap();
@@ -83,7 +40,7 @@ const MapController: React.FC<{ center: [number, number]; zoom: number; city: st
 };
 
 const TrafficMap: React.FC = () => {
-  const { segments, cityCenter, city } = useFeedStore();
+  const { cityCenter, city } = useFeedStore();
   const { incidents, currentIncident, setCollisions, incidentRoutes, congestionZones } = useIncidentStore();
 
   const BIG_INTERSECTIONS = [
@@ -94,13 +51,7 @@ const TrafficMap: React.FC = () => {
     { id: '5', name: "Piccadily Chowk", lat: 30.7246, lng: 76.7621 }
   ];
 
-  // Only colour segments red for the currently focused incident
-  const focusedRoutes = currentIncident
-    ? incidentRoutes.filter(r => r.incidentId === currentIncident.id)
-    : incidentRoutes;
-  const allBlockedCoords: number[][] = focusedRoutes.flatMap(
-    (r) => r.blocked?.geometry?.coordinates || []
-  );
+
 
   // Debug: log incidentRoutes state changes
   useEffect(() => {
@@ -143,34 +94,10 @@ const TrafficMap: React.FC = () => {
           attribution='&copy; CARTO'
         />
 
-        {/* Traffic Speed Segments — only shown when there are active incidents */}
-        {incidents.filter(i => i.status === 'active' && i.city === city).length > 0 && segments.map((seg) => {
-          const cityIncidents = incidents.filter(i => i.status === 'active' && i.city === city);
-          const isBlocked = allBlockedCoords.length > 0 && isNearBlockedRoute(seg.lat, seg.lng, allBlockedCoords);
-          const adjustedSpeed = getIncidentAdjustedSpeed(seg.lat, seg.lng, seg.speed, cityIncidents);
-          const color = isBlocked ? '#ef4444' : getSpeedColor(adjustedSpeed);
-          const radius = isBlocked ? 9 : (adjustedSpeed < 5 ? 8 : 6);
-          const speedChanged = Math.abs(adjustedSpeed - seg.speed) > 0.5;
-          return (
-            <CircleMarker
-              key={seg.link_id}
-              center={[seg.lat, seg.lng]}
-              radius={radius}
-              pathOptions={{
-                color,
-                fillColor: color,
-                fillOpacity: 0.85,
-                weight: isBlocked ? 2 : 1,
-              }}
-            >
-              <Tooltip direction="top" offset={[0, -6]} opacity={0.9}>
-                <span className="text-[10px] font-mono">
-                  {isBlocked ? '🔴 ' : ''}{seg.link_name} — {adjustedSpeed.toFixed(0)} mph{speedChanged ? ` (was ${seg.speed.toFixed(0)})` : ''}{isBlocked ? ' [BLOCKED]' : ''}
-                </span>
-              </Tooltip>
-            </CircleMarker>
-          );
-        })}
+        {/* Traffic Speed Segments — DISABLED: too noisy, only show actual incident markers */}
+        {/* Segment heat-map can be re-enabled here if needed for analytics view */}
+
+
 
         {/* Incident Markers — ALL active incidents with pulsing effect */}
         {incidents.filter((inc) => inc.status === 'active' && inc.city === city).map((inc) => (

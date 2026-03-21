@@ -32,6 +32,7 @@ export interface AlertDrafts {
 }
 
 export interface LLMOutput {
+  incident_id?: string;
   signal_retiming?: {
     intersections: SignalRecommendation[];
   };

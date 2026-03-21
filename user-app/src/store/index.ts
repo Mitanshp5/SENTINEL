@@ -79,6 +79,7 @@ interface IncidentState {
   clearIncident: () => void;
   setDiversionRoutes: (routes: any[]) => void;
   setCollisions: (collisions: any[]) => void;
+  setIncidents: (incidents: Incident[]) => void;
 }
 
 export const useIncidentStore = create<IncidentState>((set) => ({
@@ -100,6 +101,7 @@ export const useIncidentStore = create<IncidentState>((set) => ({
   clearIncident: () => set({ currentIncident: null, llmOutput: null, diversionRoutes: [], collisions: [] }),
   setDiversionRoutes: (routes) => set({ diversionRoutes: routes }),
   setCollisions: (collisions) => set({ collisions }),
+  setIncidents: (incidents) => set({ incidents }),
 }));
 
 interface ChatState {

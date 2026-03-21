@@ -227,6 +227,55 @@ async def dismiss_incident(incident_id: str, body: ResolveRequest, request: Requ
     return {"status": "dismissed", "incident_id": incident_id}
 
 
+@router.post("/{incident_id}/claim")
+async def claim_incident(incident_id: str, body: ResolveRequest, request: Request):
+    """Allow an operator to manually claim an unassigned incident."""
+    if db.incidents is None:
+        raise HTTPException(status_code=503, detail="Database offline")
+    try:
+        oid = ObjectId(incident_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid incident ID format")
+
+    doc = await db.incidents.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    if doc.get("assigned_operator"):
+        raise HTTPException(status_code=400, detail="Incident is already assigned")
+
+    # Update DB
+    await db.incidents.update_one(
+        {"_id": oid},
+        {"$set": {"assigned_operator": body.operator}}
+    )
+
+    ws_manager = request.app.state.ws_manager
+    incident_city = doc.get("city", "nyc")
+    
+    # Broadcast claim
+    await ws_manager.broadcast_to_city(incident_city, {
+        "type": "incident_assigned",
+        "data": {"incident_id": incident_id, "operator": body.operator, "city": incident_city}
+    })
+
+    # Update operator queue state
+    queue_manager = request.app.state.operator_queue
+    city_state = queue_manager.state.get(incident_city)
+    if city_state:
+        if body.operator in city_state["ready"]:
+            city_state["ready"].remove(body.operator)
+        city_state["blocked"].add(body.operator)
+        if incident_id in city_state["wait"]:
+            try:
+                city_state["wait"].remove(incident_id)
+            except ValueError:
+                pass
+
+    logger.info(f"Incident {incident_id} manually claimed by {body.operator}")
+    return {"status": "claimed", "incident_id": incident_id, "operator": body.operator}
+
+
 @router.get("/{incident_id}/routes")
 async def get_incident_routes(incident_id: str):
     """Return stored routes for an incident from the diversion_routes collection."""

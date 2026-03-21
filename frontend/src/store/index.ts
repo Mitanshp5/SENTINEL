@@ -2,6 +2,12 @@ import { create } from 'zustand';
 import type { TrafficSegment, Incident, LLMOutput, ChatMessage } from '../types';
 import { api } from '../services/api';
 
+// Hardcoded city centers — used for instant map snap without waiting on API
+const CITY_CENTERS: Record<string, { lat: number; lng: number; zoom: number }> = {
+  nyc:         { lat: 40.7549, lng: -73.984,  zoom: 14 },
+  chandigarh:  { lat: 30.7333, lng: 76.7794,  zoom: 14 },
+};
+
 interface FeedState {
   city: 'nyc' | 'chandigarh';
   segments: TrafficSegment[];
@@ -24,7 +30,7 @@ export const useFeedStore = create<FeedState>((set) => ({
   segments: [],
   lastUpdate: null,
   baselines: {},
-  cityCenter: null,
+  cityCenter: CITY_CENTERS['nyc'],
   setCity: (city) => set({ city, segments: [] }),
   setSegments: (newSegments) =>
     set((state) => {
@@ -44,10 +50,15 @@ export const useFeedStore = create<FeedState>((set) => ({
   setBaselines: (baselines) => set({ baselines }),
   setCityCenter: (cityCenter) => set({ cityCenter }),
   switchCity: async (city) => {
+    // Snap map to new city immediately — no API round-trip needed
+    useIncidentStore.getState().clearAllForCity();
+    set({ city, segments: [], baselines: {}, cityCenter: CITY_CENTERS[city] });
     try {
-      const result = await api.switchCity(city);
-      set({ city, segments: [], cityCenter: result.center, baselines: {} });
-      const baselineData = await api.getBaselines();
+      await api.switchCity(city);
+      const [baselineData] = await Promise.all([
+        api.getBaselines(),
+        useIncidentStore.getState().fetchIncidents(city),
+      ]);
       set({ baselines: baselineData.baselines });
     } catch (e) {
       console.error('Failed to switch city:', e);
@@ -102,6 +113,7 @@ interface IncidentState {
   dismissIncident: (incidentId: string) => void;
   fetchIncidents: (city?: string) => Promise<void>;
   updateIncidentAssignment: (incidentId: string, operator: string) => void;
+  clearAllForCity: () => void;   // wipe everything when city switches
 }
 
 export const useIncidentStore = create<IncidentState>((set) => ({
@@ -143,7 +155,7 @@ export const useIncidentStore = create<IncidentState>((set) => ({
     set((state) => ({
       congestionZones: [
         ...state.congestionZones.filter((z: any) => z.zone_id !== zone.zone_id),
-        zone,
+        { ...zone, _city: zone.city ?? zone._city },   // persist city on zone
       ],
     })),
   clearCongestionZone: (zoneId) =>
@@ -231,7 +243,18 @@ export const useIncidentStore = create<IncidentState>((set) => ({
       console.error('Failed to fetch incidents:', e);
     }
   },
-  updateIncidentAssignment: (incidentId, operator) =>
+  clearAllForCity: () =>
+    set({
+      incidents: [],
+      currentIncident: null,
+      llmOutput: null,
+      diversionRoutes: [],
+      collisions: [],
+      congestionZones: [],
+      congestionRoutes: [],
+      incidentRoutes: [],
+    }),
+  updateIncidentAssignment: (incidentId: string, operator: string) =>
     set((state) => ({
       incidents: state.incidents.map((inc) =>
         inc.id === incidentId ? { ...inc, assigned_operator: operator } : inc
