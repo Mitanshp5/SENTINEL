@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import logging
 from typing import Optional
@@ -49,7 +50,7 @@ class RoutingService:
         body = {
             "coordinates": coords,
             "instructions": True,
-            "preference": "recommended",
+            "preference": "fastest",
             "options": {
                 "avoid_features": ["ferries", "tollways"]
             }
@@ -57,7 +58,7 @@ class RoutingService:
 
         # ORS: alternative_routes is incompatible with >2 waypoints
         if not has_waypoint:
-            body["alternative_routes"] = {"target_count": 3, "weight_factor": 1.6, "share_factor": 0.6}
+            body["alternative_routes"] = {"target_count": 3, "weight_factor": 2.0, "share_factor": 0.3}
         
         if avoid_polygons_list:
             body["options"]["avoid_polygons"] = {
@@ -135,30 +136,29 @@ class RoutingService:
         }
     
     def _pick_best_alternative(self, geojson_response: dict) -> dict:
-        """From ORS response with multiple alternatives, pick the one with highest avg speed."""
+        """From ORS response with multiple alternatives, pick the shortest-distance route.
+        
+        Shortest distance produces the most natural, tight detour around an incident
+        instead of high-speed routes through distant residential streets.
+        """
         features = geojson_response.get("features", [])
         if not features:
             return geojson_response
         
         best = None
-        best_avg_speed = -1
+        best_distance = float("inf")
         
         for feature in features:
             props = feature.get("properties", {})
             summary = props.get("summary", {})
             distance = summary.get("distance", 0)  # meters
-            duration = summary.get("duration", 0)  # seconds
             
-            if duration > 0:
-                avg_speed = (distance / 1000) / (duration / 3600)  # km/h
-            else:
-                avg_speed = 0
-            
-            if avg_speed > best_avg_speed:
-                best_avg_speed = avg_speed
+            if distance < best_distance:
+                best_distance = distance
                 best = feature
         
         if best:
+            logger.info(f"Picked best alternate: {best_distance:.0f}m (from {len(features)} alternatives)")
             return {"type": "FeatureCollection", "features": [best]}
         return geojson_response
     
@@ -197,53 +197,84 @@ class RoutingService:
 
         Returns: {"blocked": {...}, "alternate": {...}, "origin": [lng, lat], "destination": [lng, lat]}
         """
-        # Diagonal offset ~800m works for both N-S and E-W oriented roads
-        # 0.008° lat ≈ 890m, 0.009° lng ≈ 750m at NYC latitude (40.7°)
-        # For Chandigarh (30.7°): 0.009° lng ≈ 865m
-        lat_offset = 0.007
-        lng_offset = 0.009
+        # Tighter offsets (~440m each direction = ~880m total route)
+        # Keeps the blocked/alternate pair local — produces natural 1-2 block detours
+        lat_offset = 0.004
+        lng_offset = 0.004
 
         origin = (round(incident_lng - lng_offset, 6), round(incident_lat - lat_offset, 6))
         destination = (round(incident_lng + lng_offset, 6), round(incident_lat + lat_offset, 6))
 
         logger.info(f"Computing incident route pair: origin={origin} dest={destination} incident=({incident_lng},{incident_lat})")
 
-        # Fetch default congestion zone polygons to also avoid
-        congestion_polys = await self.get_congestion_avoid_polygons(city)
+        # Congestion zone avoidance disabled for incident routing — causes over-constrained paths
+        # congestion_polys = await self.get_congestion_avoid_polygons(city)
+        congestion_polys = []
 
-        # Blocked road: direct route through the incident area (no avoidance)
-        blocked_raw = await self.get_diversion_route(origin, destination, avoid_coords=None)
-        blocked_info = self.extract_route_info(blocked_raw) if blocked_raw else {}
-
-        # Single-point incident: build a 0.005° padding box around the incident
+        # Tight avoidance box around the incident: ±0.002° (~220m)
         incident_corridor = self._bounding_box_polygon(
-            incident_lng - 0.003, incident_lat - 0.003,
-            incident_lng + 0.003, incident_lat + 0.003,
+            incident_lng - 0.002, incident_lat - 0.002,
+            incident_lng + 0.002, incident_lat + 0.002,
         )
 
-        # Forced perpendicular waypoint — offset in latitude to reach a parallel E-W street
-        waypoint_lat_offset = 0.006
-        waypoint = (round(incident_lng, 6), round(incident_lat + waypoint_lat_offset, 6))
-
-        # Alternate route: try with avoidance polygon + congestion zones
+        # Alternate route: avoidance polygon + congestion zones
         all_avoid_polys = [incident_corridor] + congestion_polys
-        alt_raw = await self.get_diversion_route(
+
+        # Run both ORS calls in parallel
+        blocked_task = self.get_diversion_route(origin, destination, avoid_coords=None)
+        alt_task = self.get_diversion_route(
             origin, destination,
             avoid_polygons_list=all_avoid_polys,
         )
 
-        # If alternate route is too similar to blocked route, force a waypoint
+        blocked_raw, alt_raw = await asyncio.gather(blocked_task, alt_task, return_exceptions=True)
+
+        if isinstance(blocked_raw, Exception):
+            logger.error(f"Blocked route failed: {blocked_raw}")
+            blocked_raw = None
+        if isinstance(alt_raw, Exception):
+            logger.error(f"Alternate route failed: {alt_raw}")
+            alt_raw = None
+
+        blocked_info = self.extract_route_info(blocked_raw) if blocked_raw else {}
+
+        # If alternate route is too similar to blocked, try perpendicular waypoints
+        # in BOTH directions (north and south) and pick the shorter one
         if alt_raw and blocked_raw:
             try:
                 alt_coords = alt_raw.get("features", [{}])[0].get("geometry", {}).get("coordinates", [])
                 blk_coords = blocked_raw.get("features", [{}])[0].get("geometry", {}).get("coordinates", [])
                 if self._routes_too_similar(blk_coords, alt_coords):
-                    logger.info("Alternate too similar to blocked — adding forced waypoint")
-                    alt_raw = await self.get_diversion_route(
-                        origin, destination,
-                        waypoint=waypoint,
+                    logger.info("Alternate too similar to blocked — trying perpendicular waypoints")
+                    wp_offset = 0.004  # ~440m perpendicular push
+                    wp_north = (round(incident_lng, 6), round(incident_lat + wp_offset, 6))
+                    wp_south = (round(incident_lng, 6), round(incident_lat - wp_offset, 6))
+
+                    north_task = self.get_diversion_route(
+                        origin, destination, waypoint=wp_north,
                         avoid_polygons_list=all_avoid_polys,
                     )
+                    south_task = self.get_diversion_route(
+                        origin, destination, waypoint=wp_south,
+                        avoid_polygons_list=all_avoid_polys,
+                    )
+                    north_raw, south_raw = await asyncio.gather(
+                        north_task, south_task, return_exceptions=True
+                    )
+
+                    # Pick the shorter of the two waypoint routes
+                    candidates = []
+                    for label, raw in [("north", north_raw), ("south", south_raw)]:
+                        if isinstance(raw, Exception) or raw is None:
+                            continue
+                        info = self.extract_route_info(raw)
+                        dist = info.get("total_distance_km", 999)
+                        candidates.append((dist, raw, label))
+
+                    if candidates:
+                        candidates.sort(key=lambda x: x[0])
+                        alt_raw = candidates[0][1]
+                        logger.info(f"Picked {candidates[0][2]} waypoint route ({candidates[0][0]:.2f} km)")
             except Exception:
                 pass  # Keep the non-waypoint alternate
 
@@ -468,7 +499,7 @@ class RoutingService:
         logger.info(f"Route similarity: {similarity:.2f} (threshold={threshold})")
         return similarity > threshold
 
-    def _coord_to_polygon(self, coord: tuple[float, float], radius: float = 0.0005) -> list:
+    def _coord_to_polygon(self, coord: tuple[float, float], radius: float = 0.002) -> list:
         """Create a simple square polygon around a coordinate for avoidance."""
         lng, lat = coord
         return [

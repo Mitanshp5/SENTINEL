@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import logging
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -21,18 +22,25 @@ class LLMService:
         self.openrouter_key = openrouter_key
     
     async def generate(self, system_prompt: str, user_content: str, 
-                       max_tokens: int = 1500) -> Optional[str]:
+                       max_tokens: int = 1000) -> Optional[str]:
         """Generate LLM response using configured provider."""
+        t0 = time.time()
         providers = [self.provider] + [p for p in ["groq", "gemini", "openrouter"] if p != self.provider]
         
         for provider in providers:
             try:
                 if provider == "groq" and self.groq_key:
-                    return await self._call_groq(system_prompt, user_content, max_tokens)
+                    result = await self._call_groq(system_prompt, user_content, max_tokens)
+                    logger.info(f"LLM generation took {time.time() - t0:.1f}s via {provider}")
+                    return result
                 elif provider == "gemini" and self.gemini_key:
-                    return await self._call_gemini(system_prompt, user_content, max_tokens)
+                    result = await self._call_gemini(system_prompt, user_content, max_tokens)
+                    logger.info(f"LLM generation took {time.time() - t0:.1f}s via {provider}")
+                    return result
                 elif provider == "openrouter" and self.openrouter_key:
-                    return await self._call_openrouter(system_prompt, user_content, max_tokens)
+                    result = await self._call_openrouter(system_prompt, user_content, max_tokens)
+                    logger.info(f"LLM generation took {time.time() - t0:.1f}s via {provider}")
+                    return result
             except Exception as e:
                 logger.warning(f"LLM provider {provider} failed: {type(e).__name__}: {e}")
                 continue
@@ -41,39 +49,54 @@ class LLMService:
         return None
     
     async def _call_groq(self, system_prompt: str, user_content: str, 
-                         max_tokens: int) -> str:
-        from groq import Groq
-        
-        client = Groq(api_key=self.groq_key)
-        response = client.chat.completions.create(
-            model=self.groq_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            max_tokens=max_tokens
-        )
-        
-        result = response.choices[0].message.content
-        logger.info(f"Groq response: {len(result)} chars, "
-                    f"tokens: {response.usage.prompt_tokens}+{response.usage.completion_tokens}")
-        return result
+                         max_tokens: int = 1000) -> str:
+        """Call Groq API using async httpx (non-blocking)."""
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.groq_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.groq_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.3,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result = data["choices"][0]["message"]["content"]
+            logger.info(f"Groq response: {len(result)} chars")
+            return result
     
     async def _call_gemini(self, system_prompt: str, user_content: str, 
-                           max_tokens: int) -> str:
-        import google.generativeai as genai
-        
-        genai.configure(api_key=self.gemini_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        
-        response = model.generate_content(
-            system_prompt + "\n\n" + user_content,
-            generation_config=genai.GenerationConfig(max_output_tokens=max_tokens)
-        )
-        
-        result = response.text
-        logger.info(f"Gemini response: {len(result)} chars")
-        return result
+                           max_tokens: int = 1000) -> str:
+        """Call Gemini API using async httpx (non-blocking)."""
+        import httpx
+        combined = f"{system_prompt}\n\n{user_content}"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={self.gemini_key}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": [{"text": combined}]}],
+                    "generationConfig": {
+                        "maxOutputTokens": max_tokens,
+                        "temperature": 0.3,
+                    },
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result = data["candidates"][0]["content"]["parts"][0]["text"]
+            logger.info(f"Gemini response: {len(result)} chars")
+            return result
     
     async def _call_openrouter(self, system_prompt: str, user_content: str,
                                max_tokens: int) -> str:
@@ -128,15 +151,25 @@ class LLMService:
         return None
     
     async def _call_groq_chat(self, messages: list[dict], max_tokens: int) -> str:
-        from groq import Groq
-        
-        client = Groq(api_key=self.groq_key)
-        response = client.chat.completions.create(
-            model=self.groq_model,
-            messages=messages,
-            max_tokens=max_tokens
-        )
-        return response.choices[0].message.content
+        """Call Groq chat API using async httpx (non-blocking)."""
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.groq_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.groq_model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": 0.3,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
     
     async def _call_openrouter_chat(self, messages: list[dict], max_tokens: int) -> str:
         from openai import OpenAI

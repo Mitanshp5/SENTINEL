@@ -210,9 +210,7 @@ export const useIncidentStore = create<IncidentState>((set) => ({
             });
           }
         });
-        if (loadedRoutes.length > 0) {
-          set({ incidentRoutes: loadedRoutes });
-        }
+        set({ incidentRoutes: loadedRoutes });
       }
     } catch (e) {
       console.error('Failed to fetch incidents:', e);

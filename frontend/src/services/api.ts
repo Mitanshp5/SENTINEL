@@ -29,10 +29,12 @@ export const api = {
   getIncident: (id: string) =>
     fetch(`${API_BASE}/api/incidents/${id}`).then((r) => r.json()),
 
-  resolveIncident: (id: string) =>
-    fetch(`${API_BASE}/api/incidents/${id}/resolve`, { method: 'POST' }).then(
-      (r) => r.json(),
-    ),
+  resolveIncident: (id: string, operator: string) =>
+    fetch(`${API_BASE}/api/incidents/${id}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operator }),
+    }).then((r) => r.json()),
 
   getLLMOutput: (id: string) =>
     fetch(`${API_BASE}/api/incidents/${id}/llm-output`).then((r) => r.json()),
@@ -100,6 +102,9 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     }).then((r) => r.json()),
+
+  getCongestionZones: (city: string = 'nyc') =>
+    fetch(`${API_BASE}/api/congestion/zones/default?city=${city}`).then((r) => r.json()),
 
   getDemoStreets: (city: string = 'nyc') =>
     fetch(`${API_BASE}/api/demo/streets?city=${city}`).then((r) => r.json()),

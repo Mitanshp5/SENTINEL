@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Tooltip, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Tooltip, Polyline, Polygon, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { useFeedStore, useIncidentStore } from '../../store';
 import { api } from '../../services/api';
@@ -55,7 +55,7 @@ const MapController: React.FC<{ center: [number, number]; zoom: number; city: st
 
 const TrafficMap: React.FC = () => {
   const { segments, cityCenter, city } = useFeedStore();
-  const { incidents, currentIncident, setCollisions, incidentRoutes } = useIncidentStore();
+  const { incidents, currentIncident, setCollisions, incidentRoutes, congestionZones } = useIncidentStore();
   // Only colour segments red for the currently focused incident
   const focusedRoutes = currentIncident
     ? incidentRoutes.filter(r => r.incidentId === currentIncident.id)
@@ -227,6 +227,31 @@ const TrafficMap: React.FC = () => {
             )}
           </React.Fragment>
         ))}
+
+        {/* ═══ CONGESTION ZONES — permanent avoidance areas ═══ */}
+        {congestionZones
+          .filter((z: any) => z.city === city)
+          .map((zone: any) => (
+            zone.polygon && zone.polygon.length >= 4 && (
+              <Polygon
+                key={`czone-${zone.zone_id}`}
+                positions={zone.polygon.map((c: number[]) => [c[1], c[0]] as [number, number])}
+                pathOptions={{
+                  color: zone.severity === 'severe' ? '#f59e0b' : '#fbbf24',
+                  fillColor: zone.severity === 'severe' ? '#f59e0b' : '#fbbf24',
+                  fillOpacity: 0.15,
+                  weight: 2,
+                  dashArray: '6,4',
+                }}
+              >
+                <Tooltip sticky>
+                  <span className="text-[10px] font-mono">
+                    ⚠️ {zone.name} — {zone.severity} congestion zone
+                  </span>
+                </Tooltip>
+              </Polygon>
+            )
+          ))}
 
         {/* Collision markers removed — data used by LLM only, visual noise on map */}
 

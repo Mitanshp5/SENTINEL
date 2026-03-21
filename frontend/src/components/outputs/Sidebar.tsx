@@ -115,13 +115,19 @@ const Sidebar: React.FC = () => {
               <button 
                 onClick={async () => {
                   try {
-                    await api.resolveIncident(currentIncident.id);
+                    await api.resolveIncident(currentIncident.id, operator);
                     resolveIncident(currentIncident.id);
-                  } catch (e) {
-                    console.error('Failed to resolve:', e);
+                  } catch (e: any) {
+                    const msg = await e?.json?.().catch(() => null);
+                    console.error('Failed to resolve:', msg?.detail || e);
                   }
                 }}
-                className="mt-2 w-full border border-scada-green py-1.5 text-[10px] font-mono uppercase text-scada-green hover:bg-scada-green hover:text-scada-bg transition-colors"
+                disabled={!!currentIncident.assigned_operator && currentIncident.assigned_operator !== operator}
+                className={`mt-2 w-full border py-1.5 text-[10px] font-mono uppercase transition-colors ${
+                  currentIncident.assigned_operator && currentIncident.assigned_operator !== operator
+                    ? 'border-gray-600 text-gray-600 cursor-not-allowed opacity-50'
+                    : 'border-scada-green text-scada-green hover:bg-scada-green hover:text-scada-bg'
+                }`}
               >
                 RESOLVE INCIDENT
               </button>

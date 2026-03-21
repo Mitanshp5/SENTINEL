@@ -35,6 +35,9 @@ class IncidentReport(BaseModel):
     location_str: str
     description: str
 
+class ResolveRequest(BaseModel):
+    operator: str
+
 @router.post("/report")
 async def report_incident(report: IncidentReport, request: Request):
     """User-app endpoint to report an incident and queue it for operators."""
@@ -113,8 +116,8 @@ async def get_incident(incident_id: str):
 
 
 @router.post("/{incident_id}/resolve")
-async def resolve_incident(incident_id: str, request: Request):
-    """Mark an incident as resolved."""
+async def resolve_incident(incident_id: str, body: ResolveRequest, request: Request):
+    """Mark an incident as resolved — only the assigned operator can resolve."""
     if db.incidents is None:
         raise HTTPException(status_code=503, detail="Database offline")
     try:
@@ -122,12 +125,24 @@ async def resolve_incident(incident_id: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid incident ID format")
 
-    result = await db.incidents.update_one(
+    # Fetch the incident first
+    doc = await db.incidents.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    # Check operator authorization
+    assigned = doc.get("assigned_operator")
+    if assigned and assigned != body.operator:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only the assigned operator ({assigned}) can resolve this incident"
+        )
+
+    # Mark resolved
+    await db.incidents.update_one(
         {"_id": oid},
         {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat()}},
     )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Incident not found")
 
     # Broadcast resolution via WebSocket
     ws_manager = request.app.state.ws_manager
@@ -135,14 +150,13 @@ async def resolve_incident(incident_id: str, request: Request):
         "type": "incident_resolved",
         "data": {"incident_id": incident_id},
     })
-    
-    # Get current operator assignment to free them
-    doc = await db.incidents.find_one({"_id": oid})
-    if doc and doc.get("assigned_operator"):
-        queue_manager = request.app.state.operator_queue
-        await queue_manager.free_operator(doc.get("city"), doc.get("assigned_operator"), ws_manager)
 
-    logger.info(f"Incident {incident_id} resolved")
+    # Free the operator
+    if assigned:
+        queue_manager = request.app.state.operator_queue
+        await queue_manager.free_operator(doc.get("city"), assigned, ws_manager)
+
+    logger.info(f"Incident {incident_id} resolved by {body.operator}")
     return {"status": "resolved", "incident_id": incident_id}
 
 

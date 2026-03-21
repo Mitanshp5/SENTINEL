@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -169,10 +170,27 @@ async def lifespan(app: FastAPI):
                 "data": {**incident, "_id": incident_id},
             })
 
-            # 2. Fetch nearby collisions
+            # 2. Fetch nearby collisions + compute routes IN PARALLEL
             coords = incident.get("location", {}).get("coordinates", [0, 0])
             lng, lat = coords[0], coords[1]
-            collisions_data = await collision_service.get_nearby_collisions(lat, lng, city=city)
+
+            t0 = time.time()
+            collision_task = collision_service.get_nearby_collisions(lat, lng, city=city)
+            route_task = routing_service.compute_incident_route_pair(lng, lat, city=city)
+
+            results = await asyncio.gather(collision_task, route_task, return_exceptions=True)
+
+            # Unpack results safely
+            collisions_data = results[0] if not isinstance(results[0], Exception) else []
+            incident_routes = results[1] if not isinstance(results[1], Exception) else None
+
+            if isinstance(results[0], Exception):
+                logger.error(f"Collision lookup failed: {results[0]}")
+            if isinstance(results[1], Exception):
+                logger.error(f"Route computation failed: {results[1]}")
+
+            logger.info(f"Parallel stage (collisions+routing) took {time.time() - t0:.1f}s")
+
             collision_context = collision_service.get_collision_context_for_llm(collisions_data)
 
             # Broadcast collisions for map overlay
@@ -185,8 +203,15 @@ async def lifespan(app: FastAPI):
                     },
                 })
 
-            # 3. Compute incident route pair: blocked (red) + alternate (green) — road-snapped via ORS
-            incident_routes = await routing_service.compute_incident_route_pair(lng, lat, city=city)
+            # 3. Use pre-computed incident routes from parallel stage
+            if incident_routes is None:
+                # Fallback: routes failed, use empty structure
+                incident_routes = {
+                    "origin": [lng, lat],
+                    "destination": [lng, lat],
+                    "blocked": {"geometry": {"type": "LineString", "coordinates": []}, "total_length_km": 0, "street_names": []},
+                    "alternate": {"geometry": {"type": "LineString", "coordinates": []}, "total_length_km": 0, "estimated_extra_minutes": 0, "avg_speed_kmh": 0, "street_names": []},
+                }
 
             # 3b. Persist incident routes to DB
             if db.diversion_routes is not None:
