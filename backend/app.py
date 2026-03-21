@@ -132,6 +132,9 @@ async def lifespan(app: FastAPI):
                 incident_id = str(result.inserted_id)
             logger.info(f"Incident saved: {incident_id}")
 
+            # Store _id back so resolve callbacks can reference it
+            incident["_id"] = incident_id
+
             # Broadcast incident detection
             await ws_manager.broadcast({
                 "type": "incident_detected",
@@ -143,6 +146,16 @@ async def lifespan(app: FastAPI):
             lng, lat = coords[0], coords[1]
             collisions_data = await collision_service.get_nearby_collisions(lat, lng)
             collision_context = collision_service.get_collision_context_for_llm(collisions_data)
+
+            # Broadcast collisions for map overlay
+            if collisions_data:
+                await ws_manager.broadcast({
+                    "type": "collisions",
+                    "data": {
+                        "incident_id": incident_id,
+                        "collisions": collisions_data,
+                    },
+                })
 
             # 3. Compute diversion routes
             diversions = await routing_service.compute_diversions_for_incident(
@@ -194,12 +207,12 @@ async def lifespan(app: FastAPI):
                 # 7. Save LLM output to DB
                 llm_doc = {
                     "incident_id": incident_id,
-                    "signal_retiming": parsed.get("signal_retiming", ""),
-                    "diversions": parsed.get("diversions", ""),
+                    "signal_retiming": parsed.get("signal_retiming", {"intersections": [], "raw_text": ""}),
+                    "diversions": parsed.get("diversions", {"routes": [], "raw_text": ""}),
                     "alerts": parsed.get("alerts", {}),
                     "narrative_update": parsed.get("narrative_update", ""),
                     "cctv_summary": parsed.get("cctv_summary", ""),
-                    "created_at": datetime.now(timezone.utc),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                 }
                 if db.llm_outputs is not None:
                     await db.llm_outputs.insert_one(llm_doc)
@@ -220,8 +233,29 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Incident handler error: {e}", exc_info=True)
 
+    async def _on_resolve(incident: dict):
+        """Handle incident resolution."""
+        incident_id = incident.get("_id", "unknown")
+        # Update DB
+        if db.incidents is not None and incident_id != "unknown":
+            try:
+                from bson import ObjectId
+                await db.incidents.update_one(
+                    {"_id": ObjectId(incident_id)},
+                    {"$set": {"status": "resolved", "resolved_at": incident.get("resolved_at")}},
+                )
+            except Exception:
+                pass
+        # Broadcast
+        await ws_manager.broadcast({
+            "type": "incident_resolved",
+            "data": {"incident_id": incident_id, "resolved_at": incident.get("resolved_at", "")},
+        })
+        logger.info(f"Incident resolved broadcast: {incident_id}")
+
     feed_simulator.on_frame(_on_frame)
     incident_detector.on_incident(_on_incident)
+    incident_detector.on_resolve(_on_resolve)
     feed_simulator.on_loop_end(incident_detector.reset)
 
     # Expose pipeline for demo injection endpoint

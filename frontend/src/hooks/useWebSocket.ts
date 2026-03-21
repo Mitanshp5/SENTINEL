@@ -4,7 +4,7 @@ import { api } from '../services/api';
 
 export const useWebSocket = () => {
   const { setSegments } = useFeedStore();
-  const { setIncident, setLLMOutput, setDiversionRoutes } = useIncidentStore();
+  const { setIncident, setLLMOutput, setDiversionRoutes, setCollisions, clearIncident, addIncident } = useIncidentStore();
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
 
@@ -47,6 +47,12 @@ export const useWebSocket = () => {
             case 'diversion_routes':
               setDiversionRoutes(msg.data.routes || []);
               break;
+            case 'collisions':
+              setCollisions(msg.data.collisions || []);
+              break;
+            case 'incident_resolved':
+              clearIncident();
+              break;
           }
         } catch (e) {
           console.error('[WS] Parse error:', e);
@@ -67,5 +73,5 @@ export const useWebSocket = () => {
       clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
-  }, [setSegments, setIncident, setLLMOutput, setDiversionRoutes]);
+  }, [setSegments, setIncident, setLLMOutput, setDiversionRoutes, setCollisions, clearIncident, addIncident]);
 };

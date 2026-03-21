@@ -10,6 +10,7 @@ import {
   FileText,
   CheckCircle,
   History,
+  BookOpen,
 } from 'lucide-react';
 import { useIncidentStore, useFeedStore } from '../../store';
 import { api } from '../../services/api';
@@ -34,6 +35,7 @@ const Sidebar: React.FC = () => {
     signals: true,
     diversion: true,
     alerts: true,
+    narrative: true,
     logs: false,
     history: false,
   });
@@ -245,8 +247,22 @@ const Sidebar: React.FC = () => {
         </div>
       )}
 
+      {/* NARRATIVE */}
+      <SectionHeader icon={<BookOpen />} title="INCIDENT NARRATIVE" isExpanded={expanded.narrative} onToggle={() => toggle('narrative')} />
+      {expanded.narrative && (
+        <div className="p-4 border-b border-scada-border bg-scada-panel/30">
+          {llmOutput?.narrative_update ? (
+            <p className="text-[10px] font-mono text-scada-text leading-relaxed whitespace-pre-wrap">
+              {llmOutput.narrative_update}
+            </p>
+          ) : (
+            <p className="text-[10px] font-mono text-scada-text-dim italic">No narrative available</p>
+          )}
+        </div>
+      )}
+
       {/* LOGS */}
-      <SectionHeader icon={<FileText />} title="INCIDENT LOG" isExpanded={expanded.logs} onToggle={() => toggle('logs')} />
+      <SectionHeader icon={<FileText />} title="INCIDENT LOG"isExpanded={expanded.logs} onToggle={() => toggle('logs')} />
       {expanded.logs && (
         <div className="border-b border-scada-border">
           {logs.length > 0 ? (
@@ -285,7 +301,7 @@ const Sidebar: React.FC = () => {
                       className={`text-[9px] font-mono px-1.5 py-0.5 uppercase flex-shrink-0 ${
                         inc.severity === 'critical'
                           ? 'bg-scada-red/20 text-scada-red border border-scada-red/50'
-                          : inc.severity === 'high'
+                          : inc.severity === 'major'
                           ? 'bg-scada-yellow/20 text-scada-yellow border border-scada-yellow/50'
                           : 'bg-scada-border text-scada-text-dim border border-scada-border'
                       }`}

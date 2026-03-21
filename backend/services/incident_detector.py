@@ -27,10 +27,15 @@ class IncidentDetector:
         self._recovery_frames: int = 0
         # Callbacks for incident events
         self._callbacks: list[Callable] = []
+        self._resolve_callbacks: list[Callable] = []
     
     def on_incident(self, callback: Callable):
         """Register callback for incident detection events."""
         self._callbacks.append(callback)
+
+    def on_resolve(self, callback: Callable):
+        """Register callback for incident resolution events."""
+        self._resolve_callbacks.append(callback)
     
     def get_active_incident(self) -> Optional[dict]:
         """Return currently active incident or None."""
@@ -130,11 +135,19 @@ class IncidentDetector:
                 logger.error(f"Incident callback error: {e}")
     
     async def _resolve_incident(self):
-        """Mark the active incident as resolved."""
+        """Mark the active incident as resolved and notify callbacks."""
         if self._active_incident:
             self._active_incident["status"] = "resolved"
             self._active_incident["resolved_at"] = datetime.now(timezone.utc).isoformat()
             logger.info("Incident resolved — all segments recovered")
+            for callback in self._resolve_callbacks:
+                try:
+                    if asyncio.iscoroutinefunction(callback):
+                        await callback(self._active_incident)
+                    else:
+                        callback(self._active_incident)
+                except Exception as e:
+                    logger.error(f"Resolve callback error: {e}")
             self._active_incident = None
     
     def reset(self):
