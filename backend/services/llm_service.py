@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 import logging
 from typing import Optional
 
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 class LLMService:
     """Manages LLM calls with Groq (primary), Gemini (fallback), OpenRouter (backup)."""
     
-    def __init__(self, provider: str = "groq", model: str = "llama-3.3-70b-versatile",
+    def __init__(self, provider: str = "groq", model: str = "openai/gpt-oss-120b",
                  groq_key: str = "", gemini_key: str = "", openrouter_key: str = ""):
         self.provider = provider
         self.model = model
@@ -42,8 +43,9 @@ class LLMService:
         from groq import Groq
         
         client = Groq(api_key=self.groq_key)
+        groq_model = self.model if ("llama" in self.model or "mixtral" in self.model) else "llama-3.3-70b-versatile"
         response = client.chat.completions.create(
-            model=self.model if "llama" in self.model or "mixtral" in self.model else "llama-3.3-70b-versatile",
+            model=groq_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content}
@@ -81,18 +83,26 @@ class LLMService:
             api_key=self.openrouter_key
         )
         
-        response = client.chat.completions.create(
-            model="meta-llama/llama-3.3-70b-instruct:free",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            max_tokens=max_tokens
-        )
-        
-        result = response.choices[0].message.content
-        logger.info(f"OpenRouter response: {len(result)} chars")
-        return result
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content}
+                    ],
+                    max_tokens=max_tokens
+                )
+                result = response.choices[0].message.content
+                logger.info(f"OpenRouter response: {len(result)} chars")
+                return result
+            except Exception as e:
+                if "429" in str(e) and attempt < 2:
+                    wait = (attempt + 1) * 5
+                    logger.warning(f"OpenRouter 429 rate limited, retrying in {wait}s (attempt {attempt + 1}/3)")
+                    await asyncio.sleep(wait)
+                else:
+                    raise
     
     async def generate_chat_response(self, messages: list[dict], 
                                      max_tokens: int = 1000) -> Optional[str]:
@@ -120,8 +130,9 @@ class LLMService:
         from groq import Groq
         
         client = Groq(api_key=self.groq_key)
+        groq_model = self.model if ("llama" in self.model or "mixtral" in self.model) else "llama-3.3-70b-versatile"
         response = client.chat.completions.create(
-            model=self.model if "llama" in self.model or "mixtral" in self.model else "llama-3.3-70b-versatile",
+            model=groq_model,
             messages=messages,
             max_tokens=max_tokens
         )
@@ -134,12 +145,22 @@ class LLMService:
             base_url="https://openrouter.ai/api/v1",
             api_key=self.openrouter_key
         )
-        response = client.chat.completions.create(
-            model="meta-llama/llama-3.3-70b-instruct:free",
-            messages=messages,
-            max_tokens=max_tokens
-        )
-        return response.choices[0].message.content
+        
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=max_tokens
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                if "429" in str(e) and attempt < 2:
+                    wait = (attempt + 1) * 5
+                    logger.warning(f"OpenRouter chat 429 rate limited, retrying in {wait}s (attempt {attempt + 1}/3)")
+                    await asyncio.sleep(wait)
+                else:
+                    raise
     
     @staticmethod
     def _parse_signal_retiming(text: str) -> dict:
