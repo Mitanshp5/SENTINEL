@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { ReactElement } from 'react';
-import { ShieldAlert, Map as MapIcon, Home, User, MessageCircle, Navigation2 } from 'lucide-react';
+import { ShieldAlert, Map as MapIcon, Home, User, MessageCircle } from 'lucide-react';
 import { useFeedStore } from '../../store';
 
 interface AppShellProps {
@@ -99,18 +99,6 @@ const AppShell: React.FC<AppShellProps> = ({ leftPanel, centerPanel, rightPanel 
           </div>
         </main>
 
-        {/* Floating Actions (Home view only) */}
-        {activeTab === 'home' && (
-          <div className="absolute bottom-28 right-6 flex justify-end items-end z-20 pointer-events-none">
-            {/* Live Map Button */}
-            <button 
-              onClick={() => setActiveTab('map')}
-              className="pointer-events-auto bg-white border border-gray-100 text-[#1A1A1A] p-4 rounded-full shadow-xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all group"
-            >
-              <Navigation2 className="w-6 h-6 text-[#1A1A1A]" />
-            </button>
-          </div>
-        )}
 
         {/* Bottom Navigation */}
         <nav className="shrink-0 bg-white/95 backdrop-blur-xl rounded-t-[2rem] border-t border-gray-100 relative z-30 pb-safe pt-2 shadow-[0_-4px_24px_rgba(0,0,0,0.02)]">

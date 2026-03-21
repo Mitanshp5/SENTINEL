@@ -238,8 +238,8 @@ const Sidebar: React.FC = () => {
 
       {/* REPORT MODAL */}
       {isReportOpen && (
-        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/30 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-sm rounded-t-[2rem] shadow-2xl relative overflow-hidden animate-in slide-in-from-bottom duration-300 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[100] flex items-end justify-center pb-[76px] bg-black/30 backdrop-blur-sm">
+          <div className="bg-white w-full max-w-sm rounded-t-[2rem] shadow-2xl relative overflow-hidden animate-in slide-in-from-bottom duration-300 max-h-[calc(90vh-76px)] overflow-y-auto">
             <div className="sticky top-0 bg-white pt-4 pb-2 px-6 flex items-center justify-between border-b border-gray-100 z-10">
               <h2 className="text-lg font-extrabold text-[#1A1A1A]">Report a Problem</h2>
               <button
