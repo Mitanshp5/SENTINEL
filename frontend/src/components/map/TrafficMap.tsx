@@ -206,28 +206,14 @@ const TrafficMap: React.FC = () => {
         ))}
 
         {/* ═══ INCIDENT ROUTES — only for active incidents in current city ═══ */}
+        {/* ═══ LAYER 1: ALL alternate routes (GREEN) — bottom layer ═══ */}
+        {/* Only render routes with valid geometry (>=5 points = real road route) */}
         {incidentRoutes
           .filter(rp => incidents.some(i => i.id === rp.incidentId && i.city === city && i.status === 'active'))
-          .map((routePair) => (
-          <React.Fragment key={`routes-${routePair.incidentId}`}>
-            {/* Blocked Road (RED) */}
-            {routePair.blocked?.geometry?.coordinates && routePair.blocked.geometry.coordinates.length >= 2 && (
+          .map((routePair) =>
+            routePair.alternate?.geometry?.coordinates && routePair.alternate.geometry.coordinates.length >= 5 && (
               <Polyline
-                positions={routePair.blocked.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number])}
-                pathOptions={{ color: '#ef4444', weight: 7, opacity: 0.85, dashArray: '10,10' }}
-              >
-                <Tooltip sticky>
-                  <span className="text-[10px] font-mono">
-                    🔴 Congested Route — {routePair.blocked?.street_names?.join(' → ') || 'Blocked road'}
-                    {routePair.blocked?.total_length_km && ` • ${routePair.blocked.total_length_km} km`}
-                  </span>
-                </Tooltip>
-              </Polyline>
-            )}
-
-            {/* Alternate Route (GREEN) */}
-            {routePair.alternate?.geometry?.coordinates && routePair.alternate.geometry.coordinates.length >= 2 && (
-              <Polyline
+                key={`alt-${routePair.incidentId}`}
                 positions={routePair.alternate.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number])}
                 pathOptions={{ color: '#22c55e', weight: 6, opacity: 0.9 }}
               >
@@ -239,35 +225,61 @@ const TrafficMap: React.FC = () => {
                   </span>
                 </Tooltip>
               </Polyline>
-            )}
+            )
+          )}
 
-            {/* Origin marker — DIVERT HERE */}
-            {routePair.origin && (
-              <CircleMarker
-                center={[routePair.origin[1], routePair.origin[0]]}
-                radius={8}
-                pathOptions={{ color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }}
+        {/* ═══ LAYER 2: ALL blocked routes (RED) — top layer, always covers green ═══ */}
+        {incidentRoutes
+          .filter(rp => incidents.some(i => i.id === rp.incidentId && i.city === city && i.status === 'active'))
+          .map((routePair) =>
+            routePair.blocked?.geometry?.coordinates && routePair.blocked.geometry.coordinates.length >= 5 && (
+              <Polyline
+                key={`blk-${routePair.incidentId}`}
+                positions={routePair.blocked.geometry.coordinates.map((c: number[]) => [c[1], c[0]] as [number, number])}
+                pathOptions={{ color: '#ef4444', weight: 7, opacity: 0.85, dashArray: '10,10' }}
               >
-                <Tooltip direction="top" offset={[0, -8]} permanent>
-                  <span className="text-[9px] font-mono font-bold">↗ DIVERT HERE</span>
+                <Tooltip sticky>
+                  <span className="text-[10px] font-mono">
+                    🔴 Congested Route — {routePair.blocked?.street_names?.join(' → ') || 'Blocked road'}
+                    {routePair.blocked?.total_length_km && ` • ${routePair.blocked.total_length_km} km`}
+                  </span>
                 </Tooltip>
-              </CircleMarker>
-            )}
+              </Polyline>
+            )
+          )}
 
-            {/* Destination marker — REJOIN */}
-            {routePair.destination && (
-              <CircleMarker
-                center={[routePair.destination[1], routePair.destination[0]]}
-                radius={8}
-                pathOptions={{ color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }}
-              >
-                <Tooltip direction="top" offset={[0, -8]} permanent>
-                  <span className="text-[9px] font-mono font-bold">✓ REJOIN</span>
-                </Tooltip>
-              </CircleMarker>
-            )}
-          </React.Fragment>
-        ))}
+        {/* ═══ LAYER 3: ALL route markers — topmost, only show if alternate route has valid geometry ═══ */}
+        {incidentRoutes
+          .filter(rp => 
+            incidents.some(i => i.id === rp.incidentId && i.city === city && i.status === 'active') &&
+            rp.alternate?.geometry?.coordinates?.length >= 5
+          )
+          .map((routePair) => (
+            <React.Fragment key={`markers-${routePair.incidentId}`}>
+              {routePair.origin && (
+                <CircleMarker
+                  center={[routePair.origin[1], routePair.origin[0]]}
+                  radius={8}
+                  pathOptions={{ color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }}
+                >
+                  <Tooltip direction="top" offset={[0, -8]} permanent>
+                    <span className="text-[9px] font-mono font-bold">↗ DIVERT HERE</span>
+                  </Tooltip>
+                </CircleMarker>
+              )}
+              {routePair.destination && (
+                <CircleMarker
+                  center={[routePair.destination[1], routePair.destination[0]]}
+                  radius={8}
+                  pathOptions={{ color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }}
+                >
+                  <Tooltip direction="top" offset={[0, -8]} permanent>
+                    <span className="text-[9px] font-mono font-bold">✓ REJOIN</span>
+                  </Tooltip>
+                </CircleMarker>
+              )}
+            </React.Fragment>
+          ))}
 
         {/* ═══ CONGESTION ZONES — permanent avoidance areas ═══ */}
         {congestionZones
