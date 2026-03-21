@@ -1,180 +1,190 @@
 import React, { useState } from 'react';
 import {
-  TrafficCone,
-  Navigation,
-  Share2,
-  ChevronDown,
-  ChevronRight,
-  AlertTriangle,
-  ArrowRight,
-  FileText,
-  CheckCircle,
+  MapPin, Clock, AlertTriangle, AlertCircle, ShieldCheck, X, AlertOctagon, Navigation
 } from 'lucide-react';
 
-/* ═══ STATIC MOCK DATA ═══ */
-const INCIDENT = {
-  id: 'INC-4827',
-  street: 'BROADWAY & W 34TH ST',
-  type: 'Multi-Vehicle Collision',
-  detectedAt: '14:23:17',
-  lanesBlocked: '3 of 4',
-};
-
-const ALERTS = {
-  vms: 'ACCIDENT W 34TH ST\nUSE 10TH AVE ALT\nDELAY: 15-25 MIN',
-  radio: 'Attention motorists. Accident at Broadway and W 34th St. 3 lanes blocked. Use 10th Ave as alternate. Expected delays of 15 to 25 minutes.',
-};
-
-const LOGS = [
-  { time: '14:23:17', type: 'alert', event: 'Detection: Speed drop on Segment 1001' },
-  { time: '14:24:03', type: 'success', event: 'Action: Signal recommendations posted' },
-  { time: '14:27:45', type: 'info', event: 'Update: FDNY Engine 26 on scene' },
+/* ═══ MOCK DATA ═══ */
+const INCIDENTS = [
+  {
+    id: 'INC-4827',
+    title: 'Multi-Vehicle Collision',
+    street: 'Broadway & W 34th St',
+    time: '14:23',
+    etaImpact: '+25 min',
+    severity: 'critical',
+  },
+  {
+    id: 'INC-4828',
+    title: 'Construction Delay',
+    street: '7th Ave & W 42nd St',
+    time: '13:10',
+    etaImpact: '+10 min',
+    severity: 'moderate',
+  },
+  {
+    id: 'INC-4829',
+    title: 'Debris on Road',
+    street: '10th Ave Bypass',
+    time: '14:05',
+    etaImpact: '+2 min',
+    severity: 'low',
+  }
 ];
 
-const Sidebar: React.FC = () => {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    incident: true,
-    signals: true,
-    diversion: true,
-    alerts: true,
-    logs: true,
-  });
+const SeverityConfig = {
+  critical: { color: 'bg-[#FF5A5F]', text: 'text-[#FF5A5F]', border: 'border-l-[#FF5A5F]', icon: <AlertTriangle className="w-5 h-5 text-[#FF5A5F]" /> },
+  moderate: { color: 'bg-[#eab308]', text: 'text-[#eab308]', border: 'border-l-[#eab308]', icon: <AlertCircle className="w-5 h-5 text-[#eab308]" /> },
+  low: { color: 'bg-[#A3B18A]', text: 'text-[#A3B18A]', border: 'border-l-[#A3B18A]', icon: <ShieldCheck className="w-5 h-5 text-[#A3B18A]" /> },
+};
 
-  const toggle = (sec: string) => setExpanded((p) => ({ ...p, [sec]: !p[sec] }));
+const Sidebar: React.FC = () => {
+  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [location, setLocation] = useState('');
+  const [locError, setLocError] = useState('');
+
+  const handleGetLocation = () => {
+    setLocError('');
+    if (!navigator.geolocation) {
+      setLocError('Geolocation not supported');
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocation(`${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}`);
+      },
+      () => {
+        setLocError('Location access denied');
+      }
+    );
+  };
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto pb-8">
+    <div className="flex flex-col h-full w-full">
       
-      {/* INCIDENT HEADER */}
-      <div className="p-4 border-b border-scada-border">
-        <div className="flex items-start gap-3">
-          <div className="mt-1 p-2 bg-scada-red/10 border border-scada-red/50">
-            <AlertTriangle className="h-4 w-4 text-scada-red" />
-          </div>
-          <div>
-            <span className="text-[10px] font-mono text-scada-red uppercase mb-1 block tracking-wider font-bold">
-              ● Active Critical
-            </span>
-            <h3 className="text-sm font-bold text-scada-header uppercase leading-tight mb-2">
-              {INCIDENT.street}
-            </h3>
-            <div className="flex flex-col gap-1 text-[10px] font-mono">
-              <span className="text-scada-text">
-                <span className="text-scada-text-dim">ID:</span> {INCIDENT.id} <span className="text-scada-text-dim px-1">|</span> <span className="text-scada-text-dim">TYPE:</span> <span className="text-scada-yellow">{INCIDENT.type}</span>
-              </span>
-              <span className="text-scada-text">
-                <span className="text-scada-text-dim">DETECTED:</span> {INCIDENT.detectedAt} <span className="text-scada-text-dim px-1">|</span> <span className="text-scada-text-dim">LANES:</span> <span className="text-scada-red font-bold">{INCIDENT.lanesBlocked} blocked</span>
-              </span>
-            </div>
-          </div>
-        </div>
+      {/* FULL WIDTH REPORT BLOCK */}
+      <div className="px-6 mb-8">
+        <button 
+          onClick={() => setIsReportOpen(true)}
+          className="w-full bg-gradient-to-r from-[#FF5A5F] to-[#ff878a] rounded-2xl p-4 text-white shadow-lg shadow-[#FF5A5F]/20 flex items-center justify-center gap-3 hover:scale-[1.02] active:scale-95 transition-all"
+        >
+          <AlertOctagon className="w-5 h-5" />
+          <span className="font-bold text-[15px] tracking-wide">Report a Problem</span>
+        </button>
       </div>
 
-      {/* SIGNALS */}
-      <SectionHeader icon={<TrafficCone />} title="SIGNALS" isExpanded={expanded.signals} onToggle={() => toggle('signals')} />
-      {expanded.signals && (
-        <div className="p-4 border-b border-scada-border space-y-3 bg-scada-surface">
-          <div className="text-[11px] font-mono text-scada-text space-y-2">
-            <div className="flex items-start gap-2">
-              <span className="text-scada-green font-bold">[EXTEND]</span>
-              <span>N/S Green on Broadway by <span className="text-scada-green font-bold">+45s</span></span>
-            </div>
-            <div className="flex items-start gap-2">
-              <span className="text-scada-red font-bold">[REDUCE]</span>
-              <span>E/W Green on 34th St by <span className="text-scada-red font-bold">-15s</span></span>
-            </div>
-            <div className="flex items-start gap-2">
-              <span className="text-scada-blue font-bold">[PRE-EMPT]</span>
-              <span>Spillback at 7th Ave & W 33rd</span>
-            </div>
-          </div>
-          <button className="w-full mt-2 border border-scada-green/30 bg-scada-green/10 text-scada-green py-2 text-[10px] font-mono font-bold uppercase hover:bg-scada-green hover:text-black transition-colors">
-            APPLY ALL TIMINGS
-          </button>
-        </div>
-      )}
+      <div className="px-6 space-y-4">
+        {INCIDENTS.map(inc => {
+          const conf = SeverityConfig[inc.severity as keyof typeof SeverityConfig];
+          return (
+            <div 
+              key={inc.id} 
+              className={`bg-white rounded-[1.25rem] p-5 shadow-sm border border-[#EAEAEA] border-l-4 hover:shadow-md transition-all cursor-pointer relative overflow-hidden`}
+              style={{ borderLeftColor: conf.color.replace('bg-[', '').replace(']', '') }}
+            >
+              <div className="flex justify-between items-start mb-4">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2.5 rounded-xl bg-gray-50 border border-gray-100`}>
+                    {conf.icon}
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-[#1A1A1A] text-sm">{inc.title}</h3>
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mt-0.5">{inc.id}</p>
+                  </div>
+                </div>
+                {inc.severity === 'critical' && (
+                  <span className="flex h-2.5 w-2.5 relative mt-2 mr-1">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#FF5A5F] opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#FF5A5F]"></span>
+                  </span>
+                )}
+              </div>
 
-      {/* DIVERSION */}
-      <SectionHeader icon={<Navigation />} title="DIVERSION PLAN" isExpanded={expanded.diversion} onToggle={() => toggle('diversion')} />
-      {expanded.diversion && (
-        <div className="p-4 border-b border-scada-border space-y-4 bg-scada-surface">
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-[11px] font-mono text-scada-header font-bold block">10th Ave Bypass</span>
-              <span className="text-[9px] font-mono px-1.5 py-0.5 border border-scada-blue/30 bg-scada-blue/10 text-scada-blue font-bold">READY</span>
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-2.5 text-xs text-gray-600">
+                  <MapPin className="w-4 h-4 text-gray-400" />
+                  <span className="font-medium">{inc.street}</span>
+                </div>
+                
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5 text-xs text-gray-600">
+                    <Clock className="w-4 h-4 text-gray-400" />
+                    <span className="font-medium">{inc.time}</span>
+                  </div>
+                  <div className={`text-xs font-bold px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-100`}>
+                    <span className={conf.text}>{inc.etaImpact}</span>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {['10th Ave', 'W 42nd St', '9th Ave', 'W 30th St'].map((step, i, arr) => (
-                <React.Fragment key={i}>
-                  <span className="text-[9px] font-mono px-2 py-1 border border-scada-border text-scada-text">{step}</span>
-                  {i < arr.length - 1 && <ArrowRight className="h-3 w-3 text-scada-text-dim" />}
-                </React.Fragment>
-              ))}
-            </div>
-          </div>
-          <button className="w-full border border-scada-blue/30 bg-scada-blue/5 text-scada-blue py-2 text-[10px] font-mono font-bold uppercase hover:bg-scada-blue hover:text-black transition-colors">
-            ACTIVATE ROUTE
-          </button>
-        </div>
-      )}
+          );
+        })}
+      </div>
 
-      {/* ALERTS */}
-      <SectionHeader icon={<Share2 />} title="PUBLIC ALERTS" isExpanded={expanded.alerts} onToggle={() => toggle('alerts')} />
-      {expanded.alerts && (
-        <div className="p-4 border-b border-scada-border space-y-4 bg-scada-surface">
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-mono text-scada-text-dim">VMS SIGNBOARD</span>
-              <CheckCircle className="h-3 w-3 text-scada-green cursor-pointer hover:text-scada-green" />
-            </div>
-            <pre className="text-[10px] font-mono bg-scada-bg p-2 border border-scada-border text-scada-yellow leading-relaxed">
-              {ALERTS.vms}
-            </pre>
-          </div>
-          
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-mono text-scada-text-dim">RADIO BROADCAST</span>
-              <CheckCircle className="h-3 w-3 text-scada-green cursor-pointer hover:text-scada-green" />
-            </div>
-            <p className="text-[10px] font-mono bg-scada-bg p-2 border border-scada-border text-scada-header leading-relaxed">
-              {ALERTS.radio}
-            </p>
-          </div>
-        </div>
-      )}
+      {/* REPORT MODAL POPUP */}
+      {isReportOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/30 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-sm rounded-[2rem] shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-200">
+            <button 
+              onClick={() => setIsReportOpen(false)}
+              className="absolute top-5 right-5 p-2 bg-gray-50 text-gray-400 rounded-full hover:bg-gray-100 hover:text-gray-600 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="p-6 pt-8">
+              <h2 className="text-xl font-extrabold text-[#1A1A1A] mb-6">Report a Problem</h2>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 mb-1.5 uppercase tracking-wider">Report Issue Type</label>
+                  <select className="w-full bg-gray-50 border border-gray-200 text-[#1A1A1A] text-sm rounded-xl px-4 py-3.5 outline-none focus:border-[#FF5A5F] focus:ring-1 focus:ring-[#FF5A5F] transition-all appearance-none font-semibold">
+                    <option>Traffic Collision</option>
+                    <option>Road Hazard / Debris</option>
+                    <option>Infrastructure Damage</option>
+                    <option>Medical Emergency</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 mb-1.5 uppercase tracking-wider">Location</label>
+                  <div className="relative">
+                    <input 
+                      type="text" 
+                      value={location}
+                      onChange={e => setLocation(e.target.value)}
+                      placeholder="e.g. Broadway & W 34th St" 
+                      className="w-full bg-gray-50 border border-gray-200 text-[#1A1A1A] text-sm rounded-xl pl-4 pr-12 py-3.5 outline-none focus:border-[#FF5A5F] focus:ring-1 focus:ring-[#FF5A5F] transition-all font-semibold placeholder:text-gray-400 placeholder:font-medium" 
+                    />
+                    <button 
+                      onClick={handleGetLocation}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-[#FF5A5F] transition-colors"
+                      title="Use Current Location"
+                    >
+                      <Navigation className="w-4 h-4" />
+                    </button>
+                  </div>
+                  {locError && <p className="text-[#FF5A5F] text-[10px] mt-1.5 font-bold">{locError}</p>}
+                </div>
 
-      {/* LOGS */}
-      <SectionHeader icon={<FileText />} title="INCIDENT LOG" isExpanded={expanded.logs} onToggle={() => toggle('logs')} />
-      {expanded.logs && (
-        <div className="border-b border-scada-border bg-scada-surface">
-          {LOGS.map((log, i) => (
-            <div key={i} className="flex gap-3 px-4 py-2 text-[10px] font-mono border-b border-scada-border last:border-0">
-              <span className="text-scada-text-dim whitespace-nowrap">{log.time}</span>
-              <span className={`flex-1 ${
-                log.type === 'alert' ? 'text-scada-red' :
-                log.type === 'success' ? 'text-scada-green' :
-                'text-scada-blue'
-              }`}>
-                {log.event}
-              </span>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 mb-1.5 uppercase tracking-wider">Describe Issue</label>
+                  <textarea rows={3} placeholder="Provide details..." className="w-full bg-gray-50 border border-gray-200 text-[#1A1A1A] text-sm rounded-xl px-4 py-3.5 outline-none focus:border-[#FF5A5F] focus:ring-1 focus:ring-[#FF5A5F] transition-all resize-none font-semibold placeholder:text-gray-400 placeholder:font-medium"></textarea>
+                </div>
+                
+                <button 
+                  onClick={() => setIsReportOpen(false)}
+                  className="w-full mt-6 bg-[#1A1A1A] text-white rounded-xl py-4 font-bold tracking-wide shadow-lg hover:bg-black transition-colors"
+                >
+                  Submit Report
+                </button>
+              </div>
             </div>
-          ))}
+          </div>
         </div>
       )}
 
     </div>
   );
 };
-
-const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; isExpanded: boolean; onToggle: () => void }> = ({ icon, title, isExpanded, onToggle }) => (
-  <button onClick={onToggle} className="w-full flex items-center justify-between p-3 border-b border-scada-border bg-scada-panel hover:bg-scada-surface transition-colors text-scada-text-dim">
-    <div className="flex items-center gap-3">
-      {React.cloneElement(icon as React.ReactElement, { className: 'h-4 w-4 text-scada-text' })}
-      <span className="text-[11px] font-mono uppercase font-bold text-scada-text tracking-wider">{title}</span>
-    </div>
-    {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-  </button>
-);
 
 export default Sidebar;

@@ -56,7 +56,7 @@ const DIVERSION_PATH: [number, number][] = [
 const INCIDENT_LOCATION: [number, number] = [40.7500, -73.9888];
 
 const getSpeedColorAndWeight = (speed: number) => {
-  if (speed < 10) return { color: '#ef4444', weight: 4 }; // Red for stopped/critical
+  if (speed < 10) return { color: '#FF5A5F', weight: 4 }; // Red for stopped/critical
   if (speed < 20) return { color: '#a1a1aa', weight: 3 }; // Light gray for slow
   return { color: '#3f3f46', weight: 2 }; // Dark gray for normal
 };
@@ -71,7 +71,7 @@ const TrafficMap: React.FC = () => {
         zoomControl={false}
       >
         <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"
+          url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
           attribution='&copy; CARTO'
         />
 
@@ -95,7 +95,7 @@ const TrafficMap: React.FC = () => {
         <Polyline
           positions={DIVERSION_PATH}
           pathOptions={{
-            color: '#ffffff',
+            color: '#1A1A1A',
             weight: 3,
             opacity: 0.8,
             dashArray: '5, 5',
@@ -107,8 +107,8 @@ const TrafficMap: React.FC = () => {
           center={INCIDENT_LOCATION}
           radius={6}
           pathOptions={{
-            color: '#ef4444',
-            fillColor: '#ef4444',
+            color: '#FF5A5F',
+            fillColor: '#FF5A5F',
             fillOpacity: 1,
             weight: 2,
           }}

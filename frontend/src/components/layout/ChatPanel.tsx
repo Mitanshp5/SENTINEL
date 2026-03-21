@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Terminal, Loader2, Mic, Square } from 'lucide-react';
+import { Send, Loader2, Mic, Square } from 'lucide-react';
 
 interface ChatMessage {
   role: 'system' | 'assistant' | 'user';
@@ -172,64 +172,67 @@ const ChatPanel: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-scada-bg">
+    <div className="flex flex-col h-full bg-transparent">
       {/* Chat Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto px-6 py-6 pb-28 space-y-6">
         {messages.map((msg, i) => (
-          <div key={i} className="flex flex-col gap-1">
-             <div className="flex items-center gap-2 text-[9px] font-mono text-scada-text-dim">
-                <span className={`uppercase font-bold ${msg.role === 'assistant' ? (msg.safety_assessment === 'unsafe' ? 'text-scada-red' : msg.safety_assessment === 'caution' ? 'text-scada-yellow' : 'text-scada-text') : 'text-scada-text'}`}>
-                  {msg.role === 'user' ? 'OFC. MARTINEZ' : msg.role === 'assistant' ? 'AI CO-PILOT' : 'SYSTEM'}
+          <div key={i} className={`flex flex-col gap-1.5 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+             <div className="flex items-center gap-2 text-[10px] font-bold text-gray-500">
+                <span className={`uppercase tracking-wider ${msg.role === 'assistant' ? (msg.safety_assessment === 'unsafe' ? 'text-[#FF5A5F]' : msg.safety_assessment === 'caution' ? 'text-[#eab308]' : 'text-[#A3B18A]') : 'text-gray-800'}`}>
+                  {msg.role === 'user' ? 'You' : msg.role === 'assistant' ? 'Copilot' : 'System'}
                   {msg.safety_assessment && msg.safety_assessment !== 'unknown' && ` [${msg.safety_assessment.toUpperCase()}]`}
                 </span>
                 <span>{msg.timestamp}</span>
              </div>
-             <p className={`text-[11px] font-mono leading-relaxed whitespace-pre-wrap ${
-                msg.role === 'system' ? 'text-scada-text-dim italic' : msg.role === 'user' && msg.content === '[VOICE COMMAND RECORDED]' ? 'text-scada-blue italic font-bold' : 'text-scada-header'
+             
+             <div className={`px-4 py-3 rounded-[1.25rem] max-w-[85%] text-sm font-medium leading-relaxed shadow-sm ${
+                msg.role === 'system' ? 'w-full bg-gray-50 text-gray-500 italic border border-gray-100 text-center rounded-2xl' : 
+                msg.role === 'user' ? 'bg-[#FF5A5F] text-white rounded-tr-sm shadow-md shadow-[#FF5A5F]/20' : 
+                'bg-white text-[#1A1A1A] border border-gray-100 rounded-tl-sm shadow-sm'
              }`}>
-                {msg.content}
-             </p>
+                <p className={`${msg.content === '[VOICE COMMAND RECORDED]' ? 'italic font-bold' : ''}`}>
+                  {msg.content}
+                </p>
+             </div>
           </div>
         ))}
         {loading && (
-          <div className="flex items-center gap-2 text-[10px] font-mono text-scada-text-dim">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            <span>ANALYZING NARRATIVE WITH NATIVE AUDIO...</span>
+          <div className="flex items-center gap-2 text-xs font-bold text-gray-400 pl-2">
+            <Loader2 className="w-4 h-4 animate-spin text-[#A3B18A]" />
+            <span className="animate-pulse">Analyzing context...</span>
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
       {/* Input Area */}
-      <div className="p-3 border-t border-scada-border">
-        <div className="flex gap-2">
-          <div className="flex-1 relative flex items-center bg-scada-surface border border-scada-border focus-within:border-scada-blue transition-colors">
-            <Terminal className="absolute left-2 h-4 w-4 text-scada-text" />
+      <div className="absolute bottom-0 w-full p-6 pt-2 pb-safe bg-gradient-to-t from-[#FAFAFA] via-[#FAFAFA]/95 to-transparent">
+        <div className="flex gap-2.5 max-w-md mx-auto relative">
+          <div className="flex-1 relative flex items-center bg-white rounded-full border border-gray-200 shadow-sm px-4 focus-within:border-[#FF5A5F] focus-within:ring-1 focus-within:ring-[#FF5A5F] transition-all">
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={loading || isRecording}
-              placeholder={isRecording ? "RECORDING COMMAND..." : "ENTER COMMAND..."}
-              className={`w-full bg-transparent pl-7 pr-3 py-2 text-[10px] font-mono focus:outline-none uppercase disabled:opacity-50 ${isRecording ? 'text-scada-red placeholder:text-scada-red animate-pulse' : 'text-scada-header placeholder:text-scada-text-dim'}`}
+              placeholder={isRecording ? "Listening..." : "Message Copilot..."}
+              className={`w-full bg-transparent py-3.5 text-xs focus:outline-none disabled:opacity-50 ${isRecording ? 'text-[#FF5A5F] placeholder:text-[#FF5A5F] animate-pulse font-bold' : 'text-[#1A1A1A] placeholder:text-gray-400 font-bold'}`}
             />
           </div>
           <button
             onClick={toggleRecording}
             disabled={loading}
-            className={`px-3 py-2 disabled:opacity-50 transition-colors flex items-center justify-center border ${isRecording ? 'bg-scada-red text-scada-white border-scada-red' : 'bg-scada-panel text-scada-text border-scada-border hover:bg-scada-bg'}`}
+            className={`w-[48px] h-[48px] shrink-0 rounded-full disabled:opacity-50 transition-all flex items-center justify-center shadow-lg ${isRecording ? 'bg-[#FF5A5F] text-white shadow-[#FF5A5F]/30 hover:scale-105' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'}`}
             title="Voice Command"
           >
-            {isRecording ? <Square className="h-3 w-3" /> : <Mic className="h-3 w-3" />}
+            {isRecording ? <Square className="w-5 h-5 fill-current" /> : <Mic className="w-5 h-5" />}
           </button>
           <button 
             onClick={handleSend}
-            disabled={loading || isRecording}
-            className="bg-scada-text text-scada-bg px-4 py-2 hover:bg-scada-header disabled:opacity-50 transition-colors flex items-center gap-2"
+            disabled={loading || isRecording || !input.trim()}
+            className="w-[48px] h-[48px] shrink-0 bg-[#1A1A1A] text-white rounded-full disabled:opacity-50 transition-all flex items-center justify-center shadow-md hover:scale-105 hover:bg-black disabled:hover:scale-100"
           >
-            <span className="text-[10px] font-mono font-bold uppercase">SEND</span>
-            <Send className="h-3 w-3" />
+            <Send className="w-5 h-5 ml-1" />
           </button>
         </div>
       </div>
