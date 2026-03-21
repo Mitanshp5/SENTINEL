@@ -93,13 +93,7 @@ class FeedSimulator:
         self.current_frame_idx = 0
 
     async def _fetch_nyc_live(self) -> list[list[dict]]:
-        """Fetch real-time traffic speeds from NYC DOT Traffic Speeds NBE API.
-        
-        API columns: id, speed, travel_time, status, data_as_of, link_id,
-        link_name, link_points, encoded_poly_line, borough, owner, transcom_id.
-        NOTE: No latitude/longitude columns — geometry is in link_points
-        (space-separated "lat,lng" pairs).
-        """
+        """Fetch real-time traffic speeds from NYC DOT Traffic Speeds NBE API."""
         try:
             params = {
                 "$$app_token": self.app_token,
@@ -117,36 +111,53 @@ class FeedSimulator:
                 logger.warning("NYC API returned 0 records")
                 return []
 
-            # Group by data_as_of timestamp to form frames
-            from collections import defaultdict
-            ts_groups: dict[str, list[dict]] = defaultdict(list)
+            # Take latest record per unique link_id → single rich snapshot
+            latest_by_link: dict[str, dict] = {}
             for rec in records:
-                ts = rec.get("data_as_of", "")
-                if ts:
-                    ts_groups[ts].append(rec)
+                link_id = rec.get("link_id", "")
+                if not link_id:
+                    continue
+                existing = latest_by_link.get(link_id)
+                if not existing or str(rec.get("data_as_of", "")) > str(existing.get("data_as_of", "")):
+                    latest_by_link[link_id] = rec
 
-            frames = []
-            for ts in sorted(ts_groups.keys()):
-                frame = []
-                for rec in ts_groups[ts]:
-                    speed = float(rec.get("speed", 0) or 0)
-                    lat, lng = self._parse_link_points(rec.get("link_points", ""))
-                    if lat == 0 and lng == 0:
-                        continue  # skip records with no geometry
+            # Parse all unique segments into a base frame
+            import random
+            base_frame: list[dict] = []
+            for rec in latest_by_link.values():
+                speed = float(rec.get("speed", 0) or 0)
+                lat, lng = self._parse_link_points(rec.get("link_points", ""))
+                if lat == 0 and lng == 0:
+                    continue
+                base_frame.append({
+                    "link_id": str(rec.get("link_id", "")),
+                    "link_name": str(rec.get("link_name", "Unknown")),
+                    "speed": round(speed, 1),
+                    "travel_time": round(float(rec.get("travel_time", 0) or 0), 2),
+                    "status": "BLOCKED" if speed < 2 else "SLOW" if speed < 15 else "OK",
+                    "lat": lat,
+                    "lng": lng,
+                })
 
+            if not base_frame:
+                logger.warning("NYC API: no segments parsed from records")
+                return []
+
+            # Generate 12 replay frames with slight speed noise for realistic animation
+            frames: list[list[dict]] = []
+            for _ in range(12):
+                frame: list[dict] = []
+                for seg in base_frame:
+                    noise = random.uniform(-2.5, 2.5)
+                    spd = max(0.0, round(seg["speed"] + noise, 1))
                     frame.append({
-                        "link_id": str(rec.get("link_id", "")),
-                        "link_name": str(rec.get("link_name", "Unknown")),
-                        "speed": round(speed, 1),
-                        "travel_time": round(float(rec.get("travel_time", 0) or 0), 2),
-                        "status": "BLOCKED" if speed < 2 else "SLOW" if speed < 15 else "OK",
-                        "lat": lat,
-                        "lng": lng,
+                        **seg,
+                        "speed": spd,
+                        "status": "BLOCKED" if spd < 2 else "SLOW" if spd < 15 else "OK",
                     })
-                if frame:
-                    frames.append(frame)
+                frames.append(frame)
 
-            logger.info(f"Fetched {len(records)} records → {len(frames)} frames from NYC DOT API")
+            logger.info(f"NYC API: {len(records)} records → {len(base_frame)} unique segments → {len(frames)} replay frames")
 
             # Cache to CSV for offline use
             try:
@@ -171,29 +182,56 @@ class FeedSimulator:
             logger.warning("chandigarh_link_speed.csv not found, will use demo data")
             return []
         try:
+            import random
             df = pd.read_csv(csv_path)
-            from collections import defaultdict
-            ts_groups: dict[str, list[dict]] = defaultdict(list)
+
+            # Take latest per link_id
+            latest_by_link: dict[str, dict] = {}
             for _, row in df.iterrows():
-                ts = str(row.get("data_as_of", ""))
-                if not ts or ts == "nan":
+                link_id = str(row.get("link_id", "") or "")
+                if not link_id or link_id == "nan":
                     continue
-                speed = float(row.get("speed", 0) or 0)
-                lat, lng = self._parse_link_points(str(row.get("link_points", "") or ""))
+                ts = str(row.get("data_as_of", "") or "")
+                existing = latest_by_link.get(link_id)
+                if not existing or ts > str(existing.get("data_as_of", "")):
+                    latest_by_link[link_id] = row.to_dict()
+
+            base_frame: list[dict] = []
+            for rec in latest_by_link.values():
+                speed = float(rec.get("speed", 0) or 0)
+                lat, lng = self._parse_link_points(str(rec.get("link_points", "") or ""))
                 if lat == 0 and lng == 0:
                     continue
-                ts_groups[ts].append({
-                    "link_id": str(row.get("link_id", "")),
-                    "link_name": str(row.get("link_name", "Unknown")),
+                base_frame.append({
+                    "link_id": str(rec.get("link_id", "")),
+                    "link_name": str(rec.get("link_name", "Unknown")),
                     "speed": round(speed, 1),
-                    "travel_time": round(float(row.get("travel_time", 0) or 0), 2),
+                    "travel_time": round(float(rec.get("travel_time", 0) or 0), 2),
                     "status": "BLOCKED" if speed < 2 else "SLOW" if speed < 15 else "OK",
                     "lat": lat,
                     "lng": lng,
                 })
-            frames = [ts_groups[ts] for ts in sorted(ts_groups.keys()) if ts_groups[ts]]
-            logger.info(f"Loaded {len(frames)} Chandigarh frames from CSV")
+
+            if not base_frame:
+                return []
+
+            # Generate 12 replay frames with slight speed variation
+            frames: list[list[dict]] = []
+            for _ in range(12):
+                frame: list[dict] = []
+                for seg in base_frame:
+                    noise = random.uniform(-2.0, 2.0)
+                    spd = max(0.0, round(seg["speed"] + noise, 1))
+                    frame.append({
+                        **seg,
+                        "speed": spd,
+                        "status": "BLOCKED" if spd < 2 else "SLOW" if spd < 15 else "OK",
+                    })
+                frames.append(frame)
+
+            logger.info(f"Chandigarh CSV: {len(base_frame)} unique segments → {len(frames)} replay frames")
             return frames
+
         except Exception as e:
             logger.warning(f"Failed to load Chandigarh CSV: {e}")
             return []
@@ -220,69 +258,169 @@ class FeedSimulator:
     def _generate_demo_data(self, city: str) -> list[list[dict]]:
         """Generate synthetic demo frames for testing when no CSV exists."""
         if city == "nyc":
+            # lat references: 14th=40.7376, 18th=40.7410, 23rd=40.7428, 28th=40.7460,
+            #   34th=40.7484, 40th=40.7540, 42nd=40.7579, 45th=40.7596, 50th=40.7617,
+            #   57th=40.7638, 59th=40.7647, 72nd=40.7762
+            # lng references: 1st=-73.9771, 2nd=-73.9813, 3rd=-73.9818, Lex=-73.9847,
+            #   Park=-73.9803, Mad=-73.9881, 5th=-73.9858, 6th=-73.9961, 7th=-73.9995,
+            #   Bwy=-73.9878, 8th=-74.0009, 9th=-74.0023, 10th=-74.0020,
+            #   WSH=-74.0126, FDR=-73.9739
             segments = [
-                # W 34th St corridor
-                {"link_id": "nyc_001", "link_name": "W 34th St (7th-8th Ave)", "lat": 40.7505, "lng": -73.9904},
-                {"link_id": "nyc_002", "link_name": "W 34th St (8th-9th Ave)", "lat": 40.7522, "lng": -73.9932},
-                {"link_id": "nyc_003", "link_name": "W 34th St (6th-7th Ave)", "lat": 40.7488, "lng": -73.9876},
-                {"link_id": "nyc_004", "link_name": "W 34th St (5th-6th Ave)", "lat": 40.7491, "lng": -73.9852},
-                {"link_id": "nyc_005", "link_name": "W 34th St (9th-10th Ave)", "lat": 40.7539, "lng": -73.9960},
-                # 7th Ave corridor
-                {"link_id": "nyc_006", "link_name": "7th Ave (33rd-34th St)", "lat": 40.7498, "lng": -73.9895},
-                {"link_id": "nyc_007", "link_name": "7th Ave (34th-35th St)", "lat": 40.7512, "lng": -73.9893},
-                {"link_id": "nyc_008", "link_name": "7th Ave (35th-36th St)", "lat": 40.7526, "lng": -73.9892},
-                {"link_id": "nyc_009", "link_name": "7th Ave (32nd-33rd St)", "lat": 40.7484, "lng": -73.9897},
-                {"link_id": "nyc_010", "link_name": "7th Ave (30th-32nd St)", "lat": 40.7462, "lng": -73.9900},
-                # 8th Ave corridor
-                {"link_id": "nyc_011", "link_name": "8th Ave (33rd-35th St)", "lat": 40.7515, "lng": -73.9926},
-                {"link_id": "nyc_012", "link_name": "8th Ave (35th-37th St)", "lat": 40.7540, "lng": -73.9924},
-                {"link_id": "nyc_013", "link_name": "8th Ave (30th-33rd St)", "lat": 40.7490, "lng": -73.9928},
-                {"link_id": "nyc_014", "link_name": "8th Ave (37th-40th St)", "lat": 40.7560, "lng": -73.9922},
-                # 9th Ave corridor
-                {"link_id": "nyc_015", "link_name": "9th Ave (33rd-35th St)", "lat": 40.7532, "lng": -73.9955},
-                {"link_id": "nyc_016", "link_name": "9th Ave (35th-38th St)", "lat": 40.7555, "lng": -73.9953},
-                {"link_id": "nyc_017", "link_name": "9th Ave (30th-33rd St)", "lat": 40.7508, "lng": -73.9957},
-                {"link_id": "nyc_018", "link_name": "9th Ave (38th-42nd St)", "lat": 40.7575, "lng": -73.9951},
-                # Broadway corridor
-                {"link_id": "nyc_019", "link_name": "Broadway & 34th St", "lat": 40.7484, "lng": -73.9878},
-                {"link_id": "nyc_020", "link_name": "Broadway (32nd-34th St)", "lat": 40.7470, "lng": -73.9880},
-                {"link_id": "nyc_021", "link_name": "Broadway (34th-36th St)", "lat": 40.7498, "lng": -73.9876},
-                {"link_id": "nyc_022", "link_name": "Broadway (36th-40th St)", "lat": 40.7520, "lng": -73.9873},
-                # 10th Ave / Hudson Yards
-                {"link_id": "nyc_023", "link_name": "10th Ave (41st-43rd St)", "lat": 40.7579, "lng": -73.9980},
-                {"link_id": "nyc_024", "link_name": "10th Ave (38th-41st St)", "lat": 40.7552, "lng": -73.9982},
-                {"link_id": "nyc_025", "link_name": "10th Ave (34th-38th St)", "lat": 40.7530, "lng": -73.9984},
-                {"link_id": "nyc_026", "link_name": "Hudson Yards Access", "lat": 40.7534, "lng": -74.0010},
-                # W 42nd St
-                {"link_id": "nyc_027", "link_name": "W 42nd St (9th-10th Ave)", "lat": 40.7580, "lng": -73.9939},
-                {"link_id": "nyc_028", "link_name": "W 42nd St (8th-9th Ave)", "lat": 40.7577, "lng": -73.9917},
-                {"link_id": "nyc_029", "link_name": "W 42nd St (7th-8th Ave)", "lat": 40.7574, "lng": -73.9895},
-                {"link_id": "nyc_030", "link_name": "Times Square N (42nd-44th)", "lat": 40.7590, "lng": -73.9860},
-                # 6th Ave / Avenue of Americas
-                {"link_id": "nyc_031", "link_name": "6th Ave (32nd-34th St)", "lat": 40.7480, "lng": -73.9855},
-                {"link_id": "nyc_032", "link_name": "6th Ave (34th-36th St)", "lat": 40.7500, "lng": -73.9853},
-                {"link_id": "nyc_033", "link_name": "6th Ave (36th-40th St)", "lat": 40.7522, "lng": -73.9851},
-                {"link_id": "nyc_034", "link_name": "6th Ave (40th-42nd St)", "lat": 40.7543, "lng": -73.9849},
-                # 5th Ave
-                {"link_id": "nyc_035", "link_name": "5th Ave (32nd-34th St)", "lat": 40.7490, "lng": -73.9830},
-                {"link_id": "nyc_036", "link_name": "5th Ave (34th-36th St)", "lat": 40.7508, "lng": -73.9828},
-                {"link_id": "nyc_037", "link_name": "5th Ave (36th-40th St)", "lat": 40.7530, "lng": -73.9826},
-                # Cross streets W 36th-W 40th
-                {"link_id": "nyc_038", "link_name": "W 36th St (7th-8th Ave)", "lat": 40.7530, "lng": -73.9910},
-                {"link_id": "nyc_039", "link_name": "W 36th St (8th-9th Ave)", "lat": 40.7545, "lng": -73.9938},
-                {"link_id": "nyc_040", "link_name": "W 38th St (7th-8th Ave)", "lat": 40.7555, "lng": -73.9910},
-                {"link_id": "nyc_041", "link_name": "W 38th St (8th-9th Ave)", "lat": 40.7570, "lng": -73.9938},
-                {"link_id": "nyc_042", "link_name": "W 40th St (7th-8th Ave)", "lat": 40.7566, "lng": -73.9908},
-                {"link_id": "nyc_043", "link_name": "W 40th St (8th-9th Ave)", "lat": 40.7580, "lng": -73.9936},
-                # Penn Station / Garment District
-                {"link_id": "nyc_044", "link_name": "W 32nd St (7th-8th Ave)", "lat": 40.7476, "lng": -73.9910},
-                {"link_id": "nyc_045", "link_name": "W 30th St (7th-8th Ave)", "lat": 40.7452, "lng": -73.9910},
-                {"link_id": "nyc_046", "link_name": "W 30th St (8th-9th Ave)", "lat": 40.7467, "lng": -73.9938},
-                # Chelsea
-                {"link_id": "nyc_047", "link_name": "W 23rd St (7th-8th Ave)", "lat": 40.7432, "lng": -73.9958},
-                {"link_id": "nyc_048", "link_name": "W 23rd St (8th-9th Ave)", "lat": 40.7448, "lng": -73.9986},
-                {"link_id": "nyc_049", "link_name": "8th Ave (23rd-28th St)", "lat": 40.7455, "lng": -73.9985},
-                {"link_id": "nyc_050", "link_name": "11th Ave (34th-38th St)", "lat": 40.7555, "lng": -74.0040},
+                # --- 5th Ave (14th→59th) ---
+                {"link_id": "NYC_5AV_14", "link_name": "5th Ave & 14th St",  "lat": 40.7376, "lng": -73.9858},
+                {"link_id": "NYC_5AV_18", "link_name": "5th Ave & 18th St",  "lat": 40.7410, "lng": -73.9858},
+                {"link_id": "NYC_5AV_23", "link_name": "5th Ave & 23rd St",  "lat": 40.7428, "lng": -73.9858},
+                {"link_id": "NYC_5AV_28", "link_name": "5th Ave & 28th St",  "lat": 40.7460, "lng": -73.9858},
+                {"link_id": "NYC_5AV_34", "link_name": "5th Ave & 34th St",  "lat": 40.7484, "lng": -73.9858},
+                {"link_id": "NYC_5AV_40", "link_name": "5th Ave & 40th St",  "lat": 40.7540, "lng": -73.9858},
+                {"link_id": "NYC_5AV_45", "link_name": "5th Ave & 45th St",  "lat": 40.7596, "lng": -73.9858},
+                {"link_id": "NYC_5AV_50", "link_name": "5th Ave & 50th St",  "lat": 40.7617, "lng": -73.9858},
+                {"link_id": "NYC_5AV_59", "link_name": "5th Ave & 59th St",  "lat": 40.7647, "lng": -73.9858},
+                # --- 6th Ave (14th→59th) ---
+                {"link_id": "NYC_6AV_14", "link_name": "6th Ave & 14th St",  "lat": 40.7376, "lng": -73.9961},
+                {"link_id": "NYC_6AV_18", "link_name": "6th Ave & 18th St",  "lat": 40.7410, "lng": -73.9961},
+                {"link_id": "NYC_6AV_23", "link_name": "6th Ave & 23rd St",  "lat": 40.7428, "lng": -73.9961},
+                {"link_id": "NYC_6AV_28", "link_name": "6th Ave & 28th St",  "lat": 40.7460, "lng": -73.9961},
+                {"link_id": "NYC_6AV_34", "link_name": "6th Ave & 34th St",  "lat": 40.7484, "lng": -73.9961},
+                {"link_id": "NYC_6AV_40", "link_name": "6th Ave & 40th St",  "lat": 40.7540, "lng": -73.9961},
+                {"link_id": "NYC_6AV_45", "link_name": "6th Ave & 45th St",  "lat": 40.7596, "lng": -73.9961},
+                {"link_id": "NYC_6AV_50", "link_name": "6th Ave & 50th St",  "lat": 40.7617, "lng": -73.9961},
+                {"link_id": "NYC_6AV_59", "link_name": "6th Ave & 59th St",  "lat": 40.7647, "lng": -73.9961},
+                # --- 7th Ave (14th→59th) ---
+                {"link_id": "NYC_7AV_14", "link_name": "7th Ave & 14th St",  "lat": 40.7376, "lng": -73.9995},
+                {"link_id": "NYC_7AV_18", "link_name": "7th Ave & 18th St",  "lat": 40.7410, "lng": -73.9995},
+                {"link_id": "NYC_7AV_23", "link_name": "7th Ave & 23rd St",  "lat": 40.7428, "lng": -73.9995},
+                {"link_id": "NYC_7AV_28", "link_name": "7th Ave & 28th St",  "lat": 40.7460, "lng": -73.9995},
+                {"link_id": "NYC_7AV_34", "link_name": "7th Ave & 34th St",  "lat": 40.7484, "lng": -73.9995},
+                {"link_id": "NYC_7AV_40", "link_name": "7th Ave & 40th St",  "lat": 40.7540, "lng": -73.9995},
+                {"link_id": "NYC_7AV_45", "link_name": "7th Ave & 45th St",  "lat": 40.7596, "lng": -73.9995},
+                {"link_id": "NYC_7AV_50", "link_name": "7th Ave & 50th St",  "lat": 40.7617, "lng": -73.9995},
+                {"link_id": "NYC_7AV_59", "link_name": "7th Ave & 59th St",  "lat": 40.7647, "lng": -73.9995},
+                # --- 8th Ave / Hudson (14th→59th) ---
+                {"link_id": "NYC_8AV_14", "link_name": "8th Ave & 14th St",  "lat": 40.7376, "lng": -74.0009},
+                {"link_id": "NYC_8AV_18", "link_name": "8th Ave & 18th St",  "lat": 40.7410, "lng": -74.0009},
+                {"link_id": "NYC_8AV_23", "link_name": "8th Ave & 23rd St",  "lat": 40.7428, "lng": -74.0009},
+                {"link_id": "NYC_8AV_28", "link_name": "8th Ave & 28th St",  "lat": 40.7460, "lng": -74.0009},
+                {"link_id": "NYC_8AV_34", "link_name": "8th Ave & 34th St",  "lat": 40.7484, "lng": -74.0009},
+                {"link_id": "NYC_8AV_40", "link_name": "8th Ave & 40th St",  "lat": 40.7540, "lng": -74.0009},
+                {"link_id": "NYC_8AV_45", "link_name": "8th Ave & 45th St",  "lat": 40.7596, "lng": -74.0009},
+                {"link_id": "NYC_8AV_50", "link_name": "8th Ave & 50th St",  "lat": 40.7617, "lng": -74.0009},
+                {"link_id": "NYC_8AV_59", "link_name": "8th Ave & 59th St",  "lat": 40.7647, "lng": -74.0009},
+                # --- Broadway (14th→59th) ---
+                {"link_id": "NYC_BWY_14", "link_name": "Broadway & 14th St", "lat": 40.7376, "lng": -73.9878},
+                {"link_id": "NYC_BWY_18", "link_name": "Broadway & 18th St", "lat": 40.7410, "lng": -73.9878},
+                {"link_id": "NYC_BWY_23", "link_name": "Broadway & 23rd St", "lat": 40.7428, "lng": -73.9878},
+                {"link_id": "NYC_BWY_28", "link_name": "Broadway & 28th St", "lat": 40.7460, "lng": -73.9878},
+                {"link_id": "NYC_BWY_34", "link_name": "Broadway & 34th St", "lat": 40.7484, "lng": -73.9878},
+                {"link_id": "NYC_BWY_40", "link_name": "Broadway & 40th St", "lat": 40.7540, "lng": -73.9878},
+                {"link_id": "NYC_BWY_45", "link_name": "Broadway & 45th St", "lat": 40.7596, "lng": -73.9878},
+                {"link_id": "NYC_BWY_50", "link_name": "Broadway & 50th St", "lat": 40.7617, "lng": -73.9878},
+                {"link_id": "NYC_BWY_59", "link_name": "Broadway & 59th St", "lat": 40.7647, "lng": -73.9878},
+                # --- Madison Ave (14th→59th) ---
+                {"link_id": "NYC_MAD_14", "link_name": "Madison Ave & 14th St", "lat": 40.7376, "lng": -73.9881},
+                {"link_id": "NYC_MAD_18", "link_name": "Madison Ave & 18th St", "lat": 40.7410, "lng": -73.9881},
+                {"link_id": "NYC_MAD_23", "link_name": "Madison Ave & 23rd St", "lat": 40.7428, "lng": -73.9881},
+                {"link_id": "NYC_MAD_28", "link_name": "Madison Ave & 28th St", "lat": 40.7460, "lng": -73.9881},
+                {"link_id": "NYC_MAD_34", "link_name": "Madison Ave & 34th St", "lat": 40.7484, "lng": -73.9881},
+                {"link_id": "NYC_MAD_40", "link_name": "Madison Ave & 40th St", "lat": 40.7540, "lng": -73.9881},
+                {"link_id": "NYC_MAD_45", "link_name": "Madison Ave & 45th St", "lat": 40.7596, "lng": -73.9881},
+                {"link_id": "NYC_MAD_50", "link_name": "Madison Ave & 50th St", "lat": 40.7617, "lng": -73.9881},
+                {"link_id": "NYC_MAD_59", "link_name": "Madison Ave & 59th St", "lat": 40.7647, "lng": -73.9881},
+                # --- Lexington Ave (14th→59th) ---
+                {"link_id": "NYC_LEX_14", "link_name": "Lexington Ave & 14th St", "lat": 40.7376, "lng": -73.9847},
+                {"link_id": "NYC_LEX_18", "link_name": "Lexington Ave & 18th St", "lat": 40.7410, "lng": -73.9847},
+                {"link_id": "NYC_LEX_23", "link_name": "Lexington Ave & 23rd St", "lat": 40.7428, "lng": -73.9847},
+                {"link_id": "NYC_LEX_28", "link_name": "Lexington Ave & 28th St", "lat": 40.7460, "lng": -73.9847},
+                {"link_id": "NYC_LEX_34", "link_name": "Lexington Ave & 34th St", "lat": 40.7484, "lng": -73.9847},
+                {"link_id": "NYC_LEX_40", "link_name": "Lexington Ave & 40th St", "lat": 40.7540, "lng": -73.9847},
+                {"link_id": "NYC_LEX_45", "link_name": "Lexington Ave & 45th St", "lat": 40.7596, "lng": -73.9847},
+                {"link_id": "NYC_LEX_50", "link_name": "Lexington Ave & 50th St", "lat": 40.7617, "lng": -73.9847},
+                {"link_id": "NYC_LEX_59", "link_name": "Lexington Ave & 59th St", "lat": 40.7647, "lng": -73.9847},
+                # --- Park Ave (14th→59th) ---
+                {"link_id": "NYC_PAR_14", "link_name": "Park Ave & 14th St",  "lat": 40.7376, "lng": -73.9803},
+                {"link_id": "NYC_PAR_18", "link_name": "Park Ave & 18th St",  "lat": 40.7410, "lng": -73.9803},
+                {"link_id": "NYC_PAR_23", "link_name": "Park Ave & 23rd St",  "lat": 40.7428, "lng": -73.9803},
+                {"link_id": "NYC_PAR_28", "link_name": "Park Ave & 28th St",  "lat": 40.7460, "lng": -73.9803},
+                {"link_id": "NYC_PAR_34", "link_name": "Park Ave & 34th St",  "lat": 40.7484, "lng": -73.9803},
+                {"link_id": "NYC_PAR_40", "link_name": "Park Ave & 40th St",  "lat": 40.7540, "lng": -73.9803},
+                {"link_id": "NYC_PAR_45", "link_name": "Park Ave & 45th St",  "lat": 40.7596, "lng": -73.9803},
+                {"link_id": "NYC_PAR_50", "link_name": "Park Ave & 50th St",  "lat": 40.7617, "lng": -73.9803},
+                {"link_id": "NYC_PAR_59", "link_name": "Park Ave & 59th St",  "lat": 40.7647, "lng": -73.9803},
+                # --- 3rd Ave (14th→59th) ---
+                {"link_id": "NYC_3AV_14", "link_name": "3rd Ave & 14th St",   "lat": 40.7376, "lng": -73.9818},
+                {"link_id": "NYC_3AV_23", "link_name": "3rd Ave & 23rd St",   "lat": 40.7428, "lng": -73.9818},
+                {"link_id": "NYC_3AV_34", "link_name": "3rd Ave & 34th St",   "lat": 40.7484, "lng": -73.9818},
+                {"link_id": "NYC_3AV_42", "link_name": "3rd Ave & 42nd St",   "lat": 40.7579, "lng": -73.9818},
+                {"link_id": "NYC_3AV_50", "link_name": "3rd Ave & 50th St",   "lat": 40.7617, "lng": -73.9818},
+                {"link_id": "NYC_3AV_59", "link_name": "3rd Ave & 59th St",   "lat": 40.7647, "lng": -73.9818},
+                # --- 2nd Ave (14th→59th) ---
+                {"link_id": "NYC_2AV_14", "link_name": "2nd Ave & 14th St",   "lat": 40.7376, "lng": -73.9813},
+                {"link_id": "NYC_2AV_23", "link_name": "2nd Ave & 23rd St",   "lat": 40.7428, "lng": -73.9813},
+                {"link_id": "NYC_2AV_34", "link_name": "2nd Ave & 34th St",   "lat": 40.7484, "lng": -73.9813},
+                {"link_id": "NYC_2AV_42", "link_name": "2nd Ave & 42nd St",   "lat": 40.7579, "lng": -73.9813},
+                {"link_id": "NYC_2AV_50", "link_name": "2nd Ave & 50th St",   "lat": 40.7617, "lng": -73.9813},
+                {"link_id": "NYC_2AV_59", "link_name": "2nd Ave & 59th St",   "lat": 40.7647, "lng": -73.9813},
+                # --- 1st Ave (14th→59th) ---
+                {"link_id": "NYC_1AV_14", "link_name": "1st Ave & 14th St",   "lat": 40.7376, "lng": -73.9771},
+                {"link_id": "NYC_1AV_23", "link_name": "1st Ave & 23rd St",   "lat": 40.7428, "lng": -73.9771},
+                {"link_id": "NYC_1AV_34", "link_name": "1st Ave & 34th St",   "lat": 40.7484, "lng": -73.9771},
+                {"link_id": "NYC_1AV_42", "link_name": "1st Ave & 42nd St",   "lat": 40.7579, "lng": -73.9771},
+                {"link_id": "NYC_1AV_50", "link_name": "1st Ave & 50th St",   "lat": 40.7617, "lng": -73.9771},
+                {"link_id": "NYC_1AV_59", "link_name": "1st Ave & 59th St",   "lat": 40.7647, "lng": -73.9771},
+                # --- West Side Highway (5 segments) ---
+                {"link_id": "NYC_WSH_14", "link_name": "West Side Hwy & 14th St", "lat": 40.7376, "lng": -74.0126},
+                {"link_id": "NYC_WSH_23", "link_name": "West Side Hwy & 23rd St", "lat": 40.7428, "lng": -74.0126},
+                {"link_id": "NYC_WSH_34", "link_name": "West Side Hwy & 34th St", "lat": 40.7484, "lng": -74.0126},
+                {"link_id": "NYC_WSH_42", "link_name": "West Side Hwy & 42nd St", "lat": 40.7579, "lng": -74.0126},
+                {"link_id": "NYC_WSH_57", "link_name": "West Side Hwy & 57th St", "lat": 40.7638, "lng": -74.0126},
+                # --- FDR Drive (5 segments) ---
+                {"link_id": "NYC_FDR_14", "link_name": "FDR Dr & 14th St",    "lat": 40.7376, "lng": -73.9739},
+                {"link_id": "NYC_FDR_23", "link_name": "FDR Dr & 23rd St",    "lat": 40.7428, "lng": -73.9739},
+                {"link_id": "NYC_FDR_34", "link_name": "FDR Dr & 34th St",    "lat": 40.7484, "lng": -73.9739},
+                {"link_id": "NYC_FDR_42", "link_name": "FDR Dr & 42nd St",    "lat": 40.7579, "lng": -73.9739},
+                {"link_id": "NYC_FDR_57", "link_name": "FDR Dr & 57th St",    "lat": 40.7638, "lng": -73.9739},
+                # --- 14th St cross (E-W, 6 segments) ---
+                {"link_id": "NYC_14_1A", "link_name": "14th St & 1st Ave",    "lat": 40.7376, "lng": -73.9771},
+                {"link_id": "NYC_14_3A", "link_name": "14th St & 3rd Ave",    "lat": 40.7376, "lng": -73.9818},
+                {"link_id": "NYC_14_5A", "link_name": "14th St & 5th Ave",    "lat": 40.7376, "lng": -73.9858},
+                {"link_id": "NYC_14_7A", "link_name": "14th St & 7th Ave",    "lat": 40.7376, "lng": -73.9995},
+                {"link_id": "NYC_14_8A", "link_name": "14th St & 8th Ave",    "lat": 40.7376, "lng": -74.0009},
+                {"link_id": "NYC_14_9A", "link_name": "14th St & 9th Ave",    "lat": 40.7376, "lng": -74.0023},
+                # --- 23rd St cross (E-W, 6 segments) ---
+                {"link_id": "NYC_23_1A", "link_name": "23rd St & 1st Ave",    "lat": 40.7428, "lng": -73.9771},
+                {"link_id": "NYC_23_3A", "link_name": "23rd St & 3rd Ave",    "lat": 40.7428, "lng": -73.9818},
+                {"link_id": "NYC_23_5A", "link_name": "23rd St & 5th Ave",    "lat": 40.7428, "lng": -73.9858},
+                {"link_id": "NYC_23_7A", "link_name": "23rd St & 7th Ave",    "lat": 40.7428, "lng": -73.9995},
+                {"link_id": "NYC_23_8A", "link_name": "23rd St & 8th Ave",    "lat": 40.7428, "lng": -74.0009},
+                {"link_id": "NYC_23_9A", "link_name": "23rd St & 9th Ave",    "lat": 40.7428, "lng": -74.0023},
+                # --- 34th St cross (E-W, 6 segments) ---
+                {"link_id": "NYC_34_1A", "link_name": "34th St & 1st Ave",    "lat": 40.7484, "lng": -73.9771},
+                {"link_id": "NYC_34_3A", "link_name": "34th St & 3rd Ave",    "lat": 40.7484, "lng": -73.9818},
+                {"link_id": "NYC_34_5A", "link_name": "34th St & 5th Ave",    "lat": 40.7484, "lng": -73.9858},
+                {"link_id": "NYC_34_7A", "link_name": "34th St & 7th Ave",    "lat": 40.7484, "lng": -73.9995},
+                {"link_id": "NYC_34_8A", "link_name": "34th St & 8th Ave",    "lat": 40.7484, "lng": -74.0009},
+                {"link_id": "NYC_34_9A", "link_name": "34th St & 9th Ave",    "lat": 40.7484, "lng": -74.0023},
+                # --- 42nd St cross (E-W, 6 segments) ---
+                {"link_id": "NYC_42_1A", "link_name": "42nd St & 1st Ave",    "lat": 40.7579, "lng": -73.9771},
+                {"link_id": "NYC_42_3A", "link_name": "42nd St & 3rd Ave",    "lat": 40.7579, "lng": -73.9818},
+                {"link_id": "NYC_42_5A", "link_name": "42nd St & 5th Ave",    "lat": 40.7579, "lng": -73.9858},
+                {"link_id": "NYC_42_7A", "link_name": "42nd St & 7th Ave",    "lat": 40.7579, "lng": -73.9995},
+                {"link_id": "NYC_42_8A", "link_name": "42nd St & 8th Ave",    "lat": 40.7579, "lng": -74.0009},
+                {"link_id": "NYC_42_9A", "link_name": "42nd St & 9th Ave",    "lat": 40.7579, "lng": -74.0023},
+                # --- 57th St cross (E-W, 6 segments) ---
+                {"link_id": "NYC_57_1A", "link_name": "57th St & 1st Ave",    "lat": 40.7638, "lng": -73.9771},
+                {"link_id": "NYC_57_3A", "link_name": "57th St & 3rd Ave",    "lat": 40.7638, "lng": -73.9818},
+                {"link_id": "NYC_57_5A", "link_name": "57th St & 5th Ave",    "lat": 40.7638, "lng": -73.9858},
+                {"link_id": "NYC_57_7A", "link_name": "57th St & 7th Ave",    "lat": 40.7638, "lng": -73.9995},
+                {"link_id": "NYC_57_8A", "link_name": "57th St & 8th Ave",    "lat": 40.7638, "lng": -74.0009},
+                {"link_id": "NYC_57_9A", "link_name": "57th St & 9th Ave",    "lat": 40.7638, "lng": -74.0023},
+                # --- 72nd St cross (E-W, 6 segments) ---
+                {"link_id": "NYC_72_1A", "link_name": "72nd St & 1st Ave",    "lat": 40.7762, "lng": -73.9771},
+                {"link_id": "NYC_72_3A", "link_name": "72nd St & 3rd Ave",    "lat": 40.7762, "lng": -73.9818},
+                {"link_id": "NYC_72_5A", "link_name": "72nd St & 5th Ave",    "lat": 40.7762, "lng": -73.9858},
+                {"link_id": "NYC_72_7A", "link_name": "72nd St & 7th Ave",    "lat": 40.7762, "lng": -73.9995},
+                {"link_id": "NYC_72_8A", "link_name": "72nd St & 8th Ave",    "lat": 40.7762, "lng": -74.0009},
+                {"link_id": "NYC_72_9A", "link_name": "72nd St & 9th Ave",    "lat": 40.7762, "lng": -74.0023},
             ]
         else:
             segments = [

@@ -1,16 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Zap, ChevronDown, ChevronUp, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import { api } from '../../services/api';
+import { useFeedStore } from '../../store';
 
 type Severity = 'minor' | 'major' | 'critical';
-
-const STREETS = [
-  'W 34th St & 7th Ave',
-  'Broadway & 34th St',
-  '10th Ave & 42nd St',
-  'W 34th St & 8th Ave',
-  '7th Ave & 33rd St',
-];
 
 const SEVERITY_COLORS: Record<Severity, string> = {
   minor: 'text-yellow-400 border-yellow-400',
@@ -21,15 +14,32 @@ const SEVERITY_COLORS: Record<Severity, string> = {
 const DemoControls: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [severity, setSeverity] = useState<Severity>('major');
-  const [street, setStreet] = useState(STREETS[0]);
+  const [streets, setStreets] = useState<string[]>([]);
+  const [street, setStreet] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [message, setMessage] = useState('');
+
+  const city = useFeedStore((s) => s.city);
+
+  useEffect(() => {
+    api.getDemoStreets(city).then((data: { streets: Array<{ name: string }> }) => {
+      const names = data.streets.map((s) => s.name);
+      setStreets(names);
+      if (names.length > 0) setStreet(names[0]);
+    }).catch(() => {
+      const fallback = city === 'chandigarh'
+        ? ['Madhya Marg & Sector 17 Chowk', 'Jan Marg & IT Park Chowk', 'Dakshin Marg & Transport Chowk']
+        : ['W 34th St & 7th Ave', 'Broadway & 34th St', '10th Ave & 42nd St'];
+      setStreets(fallback);
+      setStreet(fallback[0]);
+    });
+  }, [city]);
 
   const handleInject = async () => {
     setStatus('loading');
     setMessage('');
     try {
-      const res = await api.injectIncident({ severity, street_name: street });
+      const res = await api.injectIncident({ severity, street_name: street, city });
       if (res.status === 'injected') {
         setStatus('success');
         setMessage(`${severity.toUpperCase()} incident injected at ${street}`);
@@ -86,16 +96,24 @@ const DemoControls: React.FC = () => {
           {/* Street selector */}
           <div>
             <div className="text-[9px] text-scada-text-dim mb-1.5 uppercase tracking-wider">Location</div>
+            <div className="text-[8px] text-scada-text-dim mb-1 uppercase tracking-widest">
+              City: <span className="text-scada-text">{city.toUpperCase()}</span>
+            </div>
             <select
               value={street}
               onChange={(e) => setStreet(e.target.value)}
-              className="w-full bg-scada-bg border border-scada-border text-scada-text text-[9px] px-2 py-1.5 uppercase tracking-wide outline-none focus:border-scada-text-dim"
+              disabled={streets.length === 0}
+              className="w-full bg-scada-bg border border-scada-border text-scada-text text-[9px] px-2 py-1.5 uppercase tracking-wide outline-none focus:border-scada-text-dim disabled:opacity-50"
             >
-              {STREETS.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
+              {streets.length === 0 ? (
+                <option value="">Loading...</option>
+              ) : (
+                streets.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))
+              )}
             </select>
           </div>
 

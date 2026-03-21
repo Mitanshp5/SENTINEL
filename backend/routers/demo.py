@@ -29,6 +29,30 @@ NYC_DEMO_STREETS: dict[str, dict] = {
     "7th Ave & 33rd St":    {"lat": 40.7498, "lng": -73.9895, "cross": "33rd St"},
 }
 
+CHD_DEMO_STREETS: dict[str, dict] = {
+    "Madhya Marg & Sector 17 Chowk":  {"lat": 30.7412, "lng": 76.7788, "cross": "Sector 17"},
+    "Madhya Marg & Sector 22 Chowk":  {"lat": 30.7320, "lng": 76.7780, "cross": "Sector 22"},
+    "Madhya Marg & Aroma Light":      {"lat": 30.7315, "lng": 76.7845, "cross": "Aroma Chowk"},
+    "Madhya Marg & PGI Chowk":        {"lat": 30.7646, "lng": 76.7760, "cross": "PGI"},
+    "Jan Marg & IT Park Chowk":       {"lat": 30.7270, "lng": 76.8010, "cross": "IT Park"},
+    "Jan Marg & Sector 9 Chowk":      {"lat": 30.7554, "lng": 76.7875, "cross": "Sector 9"},
+    "Dakshin Marg & Transport Chowk": {"lat": 30.7212, "lng": 76.8040, "cross": "Transport"},
+    "Himalaya Marg & Piccadily Sq":   {"lat": 30.7246, "lng": 76.7621, "cross": "Piccadily"},
+    "Vidhya Path & Sector 15":        {"lat": 30.7516, "lng": 76.7738, "cross": "Sector 15"},
+    "Purv Marg & Housing Board":      {"lat": 30.7135, "lng": 76.8202, "cross": "Housing Board"},
+    "Sector 43 ISBT Road":            {"lat": 30.7226, "lng": 76.7511, "cross": "ISBT"},
+    "Tribune Chowk":                  {"lat": 30.7270, "lng": 76.7675, "cross": "Tribune"},
+    "Rock Garden Road":               {"lat": 30.7523, "lng": 76.8078, "cross": "Rock Garden"},
+    "Elante Mall Road":               {"lat": 30.7061, "lng": 76.8016, "cross": "Elante"},
+    "Sector 32-33 Connector":         {"lat": 30.7148, "lng": 76.7700, "cross": "Sector 33"},
+}
+
+CITY_DEMO_STREETS: dict[str, dict[str, dict]] = {
+    "nyc": NYC_DEMO_STREETS,
+    "chandigarh": CHD_DEMO_STREETS,
+}
+
+
 _SEVERITY_SPEEDS  = {"minor": 8.0,  "major": 3.0,  "critical": 0.5}
 _SEVERITY_DROPS   = {"minor": 71.0, "major": 89.0, "critical": 98.0}
 _SEVERITY_BASELINES = {"minor": 27.5, "major": 26.8, "critical": 25.0}
@@ -51,8 +75,9 @@ async def inject_incident(body: InjectIncidentRequest, request: Request):
             detail="Incident pipeline not ready — app may still be starting up",
         )
 
-    # Resolve coordinates from lookup table
-    street_data = NYC_DEMO_STREETS.get(body.street_name, {})
+    # Resolve coordinates from lookup table (city-aware)
+    city_streets = CITY_DEMO_STREETS.get(body.city, NYC_DEMO_STREETS)
+    street_data = city_streets.get(body.street_name, {})
     lat = street_data.get("lat", body.lat)
     lng = street_data.get("lng", body.lng)
     cross = body.cross_street or street_data.get("cross", "")
@@ -111,11 +136,13 @@ async def inject_incident(body: InjectIncidentRequest, request: Request):
 
 
 @router.get("/streets")
-async def list_demo_streets():
-    """Return available NYC demo street locations."""
+async def list_demo_streets(city: str = "nyc"):
+    """Return available demo street locations for the given city."""
+    streets_dict = CITY_DEMO_STREETS.get(city, NYC_DEMO_STREETS)
     return {
+        "city": city,
         "streets": [
             {"name": name, "lat": data["lat"], "lng": data["lng"]}
-            for name, data in NYC_DEMO_STREETS.items()
-        ]
+            for name, data in streets_dict.items()
+        ],
     }

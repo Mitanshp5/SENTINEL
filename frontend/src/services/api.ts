@@ -95,8 +95,8 @@ export const api = {
       body: JSON.stringify(params),
     }).then((r) => r.json()),
 
-  getDemoStreets: () =>
-    fetch(`${API_BASE}/api/demo/streets`).then((r) => r.json()),
+  getDemoStreets: (city: string = 'nyc') =>
+    fetch(`${API_BASE}/api/demo/streets?city=${city}`).then((r) => r.json()),
 
   // WebSocket URL
   getWsUrl: () => {

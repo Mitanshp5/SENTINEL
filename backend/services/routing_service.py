@@ -15,15 +15,22 @@ class RoutingService:
         self._cache: dict[str, dict] = {}
     
     async def get_diversion_route(
-        self, origin: tuple[float, float], destination: tuple[float, float],
-        avoid_coords: Optional[list[tuple[float, float]]] = None
+        self,
+        origin: tuple[float, float],
+        destination: tuple[float, float],
+        avoid_coords: Optional[list[tuple[float, float]]] = None,
+        waypoint: Optional[tuple[float, float]] = None,
+        avoid_polygon: Optional[list] = None,
     ) -> Optional[dict]:
         """
         Compute a route from origin to destination.
         origin/destination: (longitude, latitude) tuples.
+        waypoint: optional forced intermediate coordinate to push ORS onto a different road.
+        avoid_polygon: pre-built closed ring polygon (takes precedence over avoid_coords).
+        avoid_coords: list of (lng, lat) points to avoid via per-point square polygons.
         Returns GeoJSON FeatureCollection with route geometry and instructions.
         """
-        cache_key = f"{origin}_{destination}_{bool(avoid_coords)}"
+        cache_key = f"{origin}_{destination}_{bool(avoid_coords)}_{waypoint}"
         if cache_key in self._cache:
             return self._cache[cache_key]
         
@@ -31,8 +38,13 @@ class RoutingService:
             logger.warning("ORS API key not configured, returning mock route")
             return self._mock_route(origin, destination)
         
+        coords = [list(origin)]
+        if waypoint:
+            coords.append(list(waypoint))
+        coords.append(list(destination))
+
         body = {
-            "coordinates": [list(origin), list(destination)],
+            "coordinates": coords,
             "instructions": True,
             "extra_info": ["roadaccessrestrictions"],
             "options": {
@@ -40,12 +52,16 @@ class RoutingService:
             }
         }
         
-        # Add avoidance zones if provided (around incident)
-        if avoid_coords:
+        if avoid_polygon:
+            body["options"]["avoid_polygons"] = {
+                "type": "MultiPolygon",
+                "coordinates": [[avoid_polygon]]
+            }
+        elif avoid_coords:
             body["options"]["avoid_polygons"] = {
                 "type": "MultiPolygon",
                 "coordinates": [
-                    [self._coord_to_polygon(c, 0.002) for c in avoid_coords]
+                    [self._coord_to_polygon(c, 0.005) for c in avoid_coords]
                 ]
             }
         
@@ -131,10 +147,21 @@ class RoutingService:
         blocked_raw = await self.get_diversion_route(origin, destination, avoid_coords=None)
         blocked_info = self.extract_route_info(blocked_raw) if blocked_raw else {}
 
-        # Alternate route: avoid a 200m radius around the incident
+        # Single-point incident: build a 0.005° padding box around the incident
+        incident_corridor = self._bounding_box_polygon(
+            incident_lng - 0.005, incident_lat - 0.005,
+            incident_lng + 0.005, incident_lat + 0.005,
+        )
+
+        # Forced perpendicular waypoint — offset in latitude to reach a parallel E-W street
+        waypoint_lat_offset = 0.012
+        waypoint = (round(incident_lng, 6), round(incident_lat + waypoint_lat_offset, 6))
+
+        # Alternate route: avoid the incident corridor + forced waypoint on parallel road
         alt_raw = await self.get_diversion_route(
             origin, destination,
-            avoid_coords=[(incident_lng, incident_lat)]
+            waypoint=waypoint,
+            avoid_polygon=incident_corridor,
         )
         alt_info = self.extract_route_info(alt_raw) if alt_raw else {}
 
@@ -202,17 +229,28 @@ class RoutingService:
             f"zone={len(congested_segments)} segments ({lat_span:.4f}°lat × {lng_span:.4f}°lng)"
         )
 
+        # Build corridor polygon (with 0.003° padding = ~330m)
+        corridor_polygon = self._bounding_box_polygon(
+            min_lng - 0.003, min_lat - 0.003,
+            max_lng + 0.003, max_lat + 0.003
+        )
+
+        # Forced perpendicular waypoint to ensure ORS uses a different road
+        if lat_span >= lng_span:  # N-S road → offset in longitude
+            waypoint = (round(center_lng + 0.013, 6), round(center_lat, 6))
+        else:  # E-W road → offset in latitude
+            waypoint = (round(center_lng, 6), round(center_lat + 0.013, 6))
+
         # Blocked (red): direct route through the congested zone
         blocked_raw = await self.get_diversion_route(origin, destination, avoid_coords=None)
         blocked_info = self.extract_route_info(blocked_raw) if blocked_raw else {}
 
-        # Alternate (green): avoid ALL congested segment positions
-        avoid_coords = [
-            (round(s["lng"], 6), round(s["lat"], 6))
-            for s in congested_segments
-            if s.get("lng") and s.get("lat")
-        ]
-        alt_raw = await self.get_diversion_route(origin, destination, avoid_coords=avoid_coords)
+        # Alternate (green): avoid the entire corridor + forced waypoint on parallel road
+        alt_raw = await self.get_diversion_route(
+            origin, destination,
+            waypoint=waypoint,
+            avoid_polygon=corridor_polygon,
+        )
         alt_info = self.extract_route_info(alt_raw) if alt_raw else {}
 
         fallback_blocked = {
@@ -294,6 +332,16 @@ class RoutingService:
         
         return results
     
+    def _bounding_box_polygon(self, min_lng: float, min_lat: float, max_lng: float, max_lat: float) -> list:
+        """Return a closed polygon ring covering the bounding box."""
+        return [
+            [min_lng, min_lat],
+            [max_lng, min_lat],
+            [max_lng, max_lat],
+            [min_lng, max_lat],
+            [min_lng, min_lat],  # close the ring
+        ]
+
     def _coord_to_polygon(self, coord: tuple[float, float], radius: float) -> list:
         """Create a simple square polygon around a coordinate for avoidance."""
         lng, lat = coord
