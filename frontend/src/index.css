@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "leaflet/dist/leaflet.css";
+@import 'mapbox-gl/dist/mapbox-gl.css';
 
 @theme {
   --color-scada-bg: #000000;
@@ -75,24 +75,40 @@ body {
   background: var(--color-scada-text-dim);
 }
 
-/* Leaflet grey tactical theme */
-.leaflet-container {
-  background: #111111 !important;
-  outline: none;
+/* Mapbox GL dark theme adjustments */
+.mapboxgl-map {
+  font-family: inherit;
 }
 
-/* Make the map tiles distinctly grey (using light_all tiles inverted and darkened) */
-.leaflet-tile-pane {
-  filter: invert(0.9) hue-rotate(180deg) brightness(1.2) contrast(0.9) grayscale(0.8) !important;
-}
-
-.leaflet-control-attribution {
+.mapboxgl-ctrl-attrib {
   display: none !important;
 }
 
-/* Remove vignette to reduce visual clutter */
-.leaflet-vignette {
-  display: none;
+.mapboxgl-ctrl-logo {
+  display: none !important;
+}
+
+/* Mapbox popup styling */
+.mapboxgl-popup-content {
+  background: #111111 !important;
+  padding: 0 !important;
+  border-radius: 8px;
+  border: 1px solid #374151;
+}
+
+.mapboxgl-popup-tip {
+  border-top-color: #111111 !important;
+}
+
+.mapboxgl-popup-close-button {
+  color: #9ca3af;
+  font-size: 16px;
+  padding: 4px 8px;
+}
+
+.mapboxgl-popup-close-button:hover {
+  color: white;
+  background: transparent;
 }
 
 /* Grid pattern overlay for minimal feel */
@@ -101,22 +117,6 @@ body {
     linear-gradient(rgba(39, 39, 42, 0.4) 1px, transparent 1px),
     linear-gradient(90deg, rgba(39, 39, 42, 0.4) 1px, transparent 1px);
   background-size: 40px 40px;
-}
-
-/* Custom Camera Popup styling */
-.camera-popup .leaflet-popup-content-wrapper {
-  background: transparent !important;
-  box-shadow: none !important;
-  padding: 0 !important;
-}
-.camera-popup .leaflet-popup-content {
-  margin: 0 !important;
-  width: auto !important;
-}
-.camera-popup .leaflet-popup-tip {
-  background: #111 !important;
-  border-top: 1px solid #374151 !important;
-  border-left: 1px solid #374151 !important;
 }
 
 /* Route glow effects */
