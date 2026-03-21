@@ -127,6 +127,26 @@ const TrafficMap: React.FC = () => {
     return { type: 'FeatureCollection' as const, features };
   }, [incidentRoutes, incidents, city]);
 
+  // Extract route endpoints for markers (origin = green dot, destination = red dot)
+  const routeEndpoints = useMemo(() => {
+    const endpoints: { id: string; origin: [number, number]; destination: [number, number] }[] = [];
+    incidentRoutes.forEach(rp => {
+      const isActive = incidents.some(i => i.id === rp.incidentId && i.city === city && i.status === 'active');
+      if (!isActive) return;
+      
+      // Get endpoints from blocked route geometry
+      const coords = rp.blocked?.geometry?.coordinates;
+      if (coords && coords.length >= 2) {
+        endpoints.push({
+          id: rp.incidentId,
+          origin: coords[0] as [number, number],
+          destination: coords[coords.length - 1] as [number, number],
+        });
+      }
+    });
+    return endpoints;
+  }, [incidentRoutes, incidents, city]);
+
   // Build GeoJSON for congestion zones
   const congestionGeoJSON = useMemo(() => ({
     type: 'FeatureCollection' as const,
@@ -244,6 +264,18 @@ const TrafficMap: React.FC = () => {
             layout={{ 'line-cap': 'round', 'line-join': 'round' }}
           />
         </Source>
+
+        {/* Route endpoint markers (origin/destination) */}
+        {routeEndpoints.map(ep => (
+          <React.Fragment key={`ep-${ep.id}`}>
+            <Marker longitude={ep.origin[0]} latitude={ep.origin[1]}>
+              <div className="w-4 h-4 rounded-full bg-green-500 border-2 border-white shadow-lg" title="Route Start" />
+            </Marker>
+            <Marker longitude={ep.destination[0]} latitude={ep.destination[1]}>
+              <div className="w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow-lg" title="Route End" />
+            </Marker>
+          </React.Fragment>
+        ))}
 
         {/* Incident markers with labels */}
         {incidents.filter(inc => inc.status === 'active' && inc.city === city).map(inc => (

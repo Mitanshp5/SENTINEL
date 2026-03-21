@@ -509,27 +509,25 @@ class RoutingService:
         - Place origin/dest just outside the circle (~1.2x radius)
         - Snap origin/dest to nearest road to avoid API 404 errors
         """
-        # Get severity-based radius
+        # Get severity-based radius - use smaller offset for local routes
         radius = self.SEVERITY_RADIUS_DEG.get(severity, 0.0030)
-        offset = radius * 1.2  # Place points just outside the circle
+        offset = radius * 1.3  # Place points just outside the circle
         
         # Detect road orientation from street name
         street_lower = on_street.lower() if on_street else ""
 
         if any(kw in street_lower for kw in ["ave", "avenue", "broadway", "blvd", "boulevard"]):
-            # N-S oriented road — offset in latitude (along the road)
-            lat_offset = offset
-            lng_offset = offset * 0.1  # Tiny offset across to stay on road
+            # N-S oriented road (avenues run north-south)
+            # Offset in LATITUDE only - keep same longitude
             road_direction = "ns"
+            raw_origin = (round(incident_lng, 6), round(incident_lat - offset, 6))
+            raw_destination = (round(incident_lng, 6), round(incident_lat + offset, 6))
         else:
-            # E-W oriented road (streets) or default — offset in longitude (along the road)
-            lat_offset = offset * 0.1  # Tiny offset across to stay on road
-            lng_offset = offset
+            # E-W oriented road (streets run east-west) or default
+            # Offset in LONGITUDE only - keep same latitude
             road_direction = "ew"
-
-        # Place origin and destination on opposite edges of the congestion circle
-        raw_origin = (round(incident_lng - lng_offset, 6), round(incident_lat - lat_offset, 6))
-        raw_destination = (round(incident_lng + lng_offset, 6), round(incident_lat + lat_offset, 6))
+            raw_origin = (round(incident_lng - offset, 6), round(incident_lat, 6))
+            raw_destination = (round(incident_lng + offset, 6), round(incident_lat, 6))
 
         # Snap origin/destination to nearest roads to avoid ORS 404 errors
         origin, destination, _ = await self.snap_coordinates(raw_origin, raw_destination)
