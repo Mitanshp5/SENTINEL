@@ -75,9 +75,17 @@ async def inject_incident(body: InjectIncidentRequest, request: Request):
             detail="Incident pipeline not ready — app may still be starting up",
         )
 
-    # Resolve coordinates from lookup table (city-aware)
+    # Resolve coordinates from lookup table (city-aware) — fuzzy partial match
     city_streets = CITY_DEMO_STREETS.get(body.city, NYC_DEMO_STREETS)
-    street_data = city_streets.get(body.street_name, {})
+    street_data = city_streets.get(body.street_name)
+    if street_data is None:
+        # Partial match: find first key containing the user's input
+        needle = body.street_name.lower()
+        for key, val in city_streets.items():
+            if needle in key.lower() or key.lower() in needle:
+                street_data = val
+                break
+    street_data = street_data or {}
     lat = street_data.get("lat", body.lat)
     lng = street_data.get("lng", body.lng)
     cross = body.cross_street or street_data.get("cross", "")

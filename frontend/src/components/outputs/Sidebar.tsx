@@ -45,7 +45,7 @@ const Sidebar: React.FC = () => {
   const [regenerating, setRegenerating] = useState(false);
 
 
-  const { currentIncident, llmOutput, incidents, setIncident, setLLMOutput, resolveIncident, congestionZones, congestionRoutes } = useIncidentStore();
+  const { currentIncident, llmOutput, incidents, setIncident, setLLMOutput, resolveIncident, congestionZones } = useIncidentStore();
   const { segments } = useFeedStore();
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const prevIncidentIdRef = useRef<string | null>(null);

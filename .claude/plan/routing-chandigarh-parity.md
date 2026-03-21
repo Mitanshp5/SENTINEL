@@ -1,4 +1,4 @@
-# Implementation Plan: Routing Overhaul + Chandigarh Parity
+# Implementation Plan: A* Routing Fix + Streets Data + Chandigarh Injection (v2)
 
 ## Task Type
 - [x] Backend (routing, congestion, data generation)

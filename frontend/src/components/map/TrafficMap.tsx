@@ -55,11 +55,22 @@ const MapController: React.FC<{ center: [number, number]; zoom: number; city: st
 
 const TrafficMap: React.FC = () => {
   const { segments, cityCenter, city } = useFeedStore();
-  const { incidents, currentIncident, diversionRoutes, collisions, setCollisions, congestionZones, congestionRoutes, incidentRoutes } = useIncidentStore();
+  const { incidents, currentIncident, collisions, setCollisions, congestionZones, congestionRoutes, incidentRoutes } = useIncidentStore();
   // AND gate: collect ALL blocked route coordinates from ALL incidents
   const allBlockedCoords: number[][] = incidentRoutes.flatMap(
     (r) => r.blocked?.geometry?.coordinates || []
   );
+
+  // Debug: log incidentRoutes state changes
+  useEffect(() => {
+    console.log('[TrafficMap] incidentRoutes updated:', incidentRoutes.length, 'pairs',
+      incidentRoutes.map(r => ({
+        id: r.incidentId,
+        blockedPts: r.blocked?.geometry?.coordinates?.length || 0,
+        altPts: r.alternate?.geometry?.coordinates?.length || 0,
+      }))
+    );
+  }, [incidentRoutes]);
 
   useEffect(() => {
     if (currentIncident) {
