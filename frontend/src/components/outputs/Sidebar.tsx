@@ -1,143 +1,171 @@
-import React from 'react';
-import { useIncidentStore } from '../../store';
-import { TrafficCone, Navigation, Share2, Clipboard, CheckCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  TrafficCone,
+  Navigation,
+  Share2,
+  ChevronDown,
+  ChevronRight,
+  AlertTriangle,
+  MapPin,
+  ArrowRight,
+  FileText,
+  CheckCircle,
+} from 'lucide-react';
+
+/* ═══ STATIC MOCK DATA ═══ */
+const INCIDENT = {
+  id: 'INC-4827',
+  street: 'BROADWAY & W 34TH ST',
+  type: 'Multi-Vehicle Collision',
+  detectedAt: '14:23:17',
+  lanesBlocked: '3 of 4',
+};
+
+const SIGNAL_RETIMING = [
+  'Extend N/S Green on Broadway by 45s',
+  'Reduce E/W Green on 34th St by 15s',
+  'Pre-empt spillback at 7th Ave & W 33rd',
+];
+
+const DIVERSION = {
+  name: 'Primary: 10th Ave Bypass',
+  path: ['10th Ave', 'W 42nd St', '9th Ave', 'W 30th St'],
+  status: 'READY to Activate',
+};
+
+const ALERTS = {
+  vms: 'ACCIDENT W 34TH ST\nUSE 10TH AVE ALT\nDELAY: 15-25 MIN',
+  radio: 'Attention motorists. Accident at Broadway and W 34th St. 3 lanes blocked. Use 10th Ave as alternate. Expected delays of 15 to 25 minutes.',
+};
+
+const LOGS = [
+  { time: '14:23:17', event: 'Detection: Speed drop on Segment 1001' },
+  { time: '14:24:03', event: 'Action: Signal recommendations posted' },
+  { time: '14:27:45', event: 'Update: FDNY Engine 26 on scene' },
+];
 
 const Sidebar: React.FC = () => {
-  const { llmOutput, currentIncident } = useIncidentStore();
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({
+    incident: true,
+    signals: true,
+    diversion: true,
+    alerts: true,
+    logs: false,
+  });
 
-  if (!currentIncident) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-scada-text/30 p-10 text-center">
-        <TrafficCone className="h-12 w-12 mb-4" />
-        <p className="text-sm font-bold uppercase tracking-widest italic">Monitoring City Feed</p>
-        <p className="text-xs mt-2 uppercase tracking-tight">System standing by for incident detection.</p>
-      </div>
-    );
-  }
+  const toggle = (sec: string) => setExpanded((p) => ({ ...p, [sec]: !p[sec] }));
 
   return (
-    <div className="flex flex-col gap-4 p-4 pb-20 overflow-y-auto h-full">
-      {/* Active Incident Header */}
-      <div className="bg-scada-red/10 border border-scada-red/30 rounded p-3">
-        <div className="flex justify-between items-start mb-2">
-          <span className="text-[10px] font-bold text-scada-red uppercase tracking-widest bg-scada-red/20 px-2 py-0.5 rounded">
-            {currentIncident.severity}
-          </span>
-          <span className="text-[10px] font-mono text-scada-text/50 uppercase">ID: {currentIncident.id}</span>
+    <div className="flex flex-col h-full overflow-y-auto pb-8">
+      
+      {/* INCIDENT HEADER */}
+      <div className="p-4 border-b border-scada-border">
+        <div className="flex items-start gap-3">
+          <div className="mt-1 p-2 bg-scada-red/10 border border-scada-red">
+            <AlertTriangle className="h-4 w-4 text-scada-red" />
+          </div>
+          <div>
+            <span className="text-[10px] font-mono text-scada-red uppercase mb-1 block">Active Critical</span>
+            <h3 className="text-sm font-bold text-scada-header uppercase leading-tight mb-2">
+              {INCIDENT.street}
+            </h3>
+            <div className="flex flex-col gap-1 text-[10px] font-mono text-scada-text">
+              <span className="text-scada-text-dim">ID: {INCIDENT.id} | TYPE: {INCIDENT.type}</span>
+              <span className="text-scada-text-dim">DETECTED: {INCIDENT.detectedAt} | LANES: {INCIDENT.lanesBlocked} blocked</span>
+            </div>
+          </div>
         </div>
-        <h3 className="text-sm font-bold text-scada-header uppercase tracking-tight truncate">
-          {currentIncident.on_street}
-        </h3>
-        <p className="text-xs text-scada-text uppercase tracking-tight">At {currentIncident.cross_street}</p>
       </div>
 
-      {/* Signal Retiming Recommendations */}
-      {llmOutput?.signal_retiming?.intersections.map((sig, i) => (
-        <div key={i} className="bg-scada-panel border border-scada-border rounded overflow-hidden">
-          <div className="bg-scada-blue/10 px-3 py-2 border-b border-scada-border flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <TrafficCone className="h-3 w-3 text-scada-blue" />
-              <span className="text-xs font-bold uppercase tracking-widest text-scada-header">Signal Retiming</span>
-            </div>
-            <button className="text-[10px] uppercase font-bold text-scada-blue hover:underline">Apply All</button>
+      {/* SIGNALS */}
+      <SectionHeader icon={<TrafficCone />} title="SIGNALS" isExpanded={expanded.signals} onToggle={() => toggle('signals')} />
+      {expanded.signals && (
+        <div className="p-4 border-b border-scada-border space-y-3 bg-scada-panel/30">
+          <div className="text-[11px] font-mono text-scada-text">
+            <ul className="list-disc pl-4 space-y-2 text-scada-text-dim">
+              {SIGNAL_RETIMING.map((sig, i) => (
+                <li key={i}>{sig}</li>
+              ))}
+            </ul>
           </div>
-          <div className="p-3">
-             <h4 className="text-xs font-bold text-scada-header mb-2 uppercase">{sig.name}</h4>
-             <div className="grid grid-cols-2 gap-4 mb-3">
-               <div className="bg-scada-bg/50 p-2 border border-scada-border/30 rounded">
-                 <span className="block text-[9px] text-scada-text/50 uppercase font-bold mb-1">N/S Green</span>
-                 <div className="flex items-center justify-between font-mono">
-                   <span className="text-scada-text line-through opacity-50">{sig.current_ns_green}s</span>
-                   <span className="text-scada-green text-sm font-bold">{sig.recommended_ns_green}s</span>
-                 </div>
-               </div>
-               <div className="bg-scada-bg/50 p-2 border border-scada-border/30 rounded">
-                 <span className="block text-[9px] text-scada-text/50 uppercase font-bold mb-1">E/W Green</span>
-                 <div className="flex items-center justify-between font-mono">
-                   <span className="text-scada-text line-through opacity-50">{sig.current_ew_green}s</span>
-                   <span className="text-scada-red text-sm font-bold">{sig.recommended_ew_green}s</span>
-                 </div>
-               </div>
-             </div>
-             <p className="text-xs italic text-scada-text/80 leading-snug border-l-2 border-scada-blue/30 pl-2">
-               {sig.reasoning}
-             </p>
-          </div>
+          <button className="w-full mt-2 border border-scada-text-dim py-2 text-[10px] font-mono uppercase hover:bg-scada-text hover:text-scada-bg transition-colors">
+            APPLY ALL TIMINGS
+          </button>
         </div>
-      ))}
+      )}
 
-      {/* Diversion Recommendations */}
-      {llmOutput?.diversions?.routes.map((route, i) => (
-        <div key={i} className="bg-scada-panel border border-scada-border rounded overflow-hidden">
-          <div className="bg-scada-blue/10 px-3 py-2 border-b border-scada-border flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Navigation className="h-3 w-3 text-scada-blue" />
-              <span className="text-xs font-bold uppercase tracking-widest text-scada-header">Active Diversion</span>
+      {/* DIVERSION */}
+      <SectionHeader icon={<Navigation />} title="DIVERSION PLAN" isExpanded={expanded.diversion} onToggle={() => toggle('diversion')} />
+      {expanded.diversion && (
+        <div className="p-4 border-b border-scada-border space-y-4 bg-scada-panel/30">
+          <div>
+            <span className="text-[11px] font-mono text-scada-text block mb-2">{DIVERSION.name}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              {DIVERSION.path.map((step, i) => (
+                <React.Fragment key={i}>
+                  <span className="text-[9px] font-mono px-2 py-1 bg-scada-border text-scada-text">{step}</span>
+                  {i < DIVERSION.path.length - 1 && <ArrowRight className="h-3 w-3 text-scada-text-dim" />}
+                </React.Fragment>
+              ))}
             </div>
           </div>
-          <div className="p-3">
-            <h4 className="text-xs font-bold text-scada-header mb-1 uppercase">{route.name}</h4>
-            <div className="flex flex-wrap gap-1 mb-3">
-               {route.path.map((step, idx) => (
-                 <React.Fragment key={idx}>
-                   <span className="text-[10px] text-scada-text uppercase bg-scada-bg/50 px-1.5 rounded border border-scada-border/20">{step}</span>
-                   {idx < route.path.length - 1 && <span className="text-scada-text/30 text-[10px]">→</span>}
-                 </React.Fragment>
-               ))}
-            </div>
-            <div className="flex items-center justify-between bg-scada-bg/50 p-2 rounded border border-scada-border/30">
-               <div>
-                 <span className="block text-[9px] text-scada-text/50 uppercase font-bold">Absorption Load</span>
-                 <span className="text-sm font-mono text-scada-blue font-bold">{route.estimated_absorption_pct}%</span>
-               </div>
-               <button className="bg-scada-blue text-white px-3 py-1 rounded text-[10px] font-bold uppercase tracking-widest hover:bg-scada-blue/80">Activate</button>
-            </div>
-          </div>
+          <button className="w-full border border-scada-text-dim py-2 text-[10px] font-mono uppercase hover:bg-scada-text hover:text-scada-bg transition-colors">
+            ACTIVATE ROUTE
+          </button>
         </div>
-      ))}
+      )}
 
-      {/* Alert Drafts */}
-      {llmOutput?.alerts && (
-        <div className="bg-scada-panel border border-scada-border rounded overflow-hidden mb-6">
-           <div className="bg-scada-blue/10 px-3 py-2 border-b border-scada-border flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Share2 className="h-3 w-3 text-scada-blue" />
-              <span className="text-xs font-bold uppercase tracking-widest text-scada-header">Broadcast Drafts</span>
+      {/* ALERTS */}
+      <SectionHeader icon={<Share2 />} title="PUBLIC ALERTS" isExpanded={expanded.alerts} onToggle={() => toggle('alerts')} />
+      {expanded.alerts && (
+        <div className="p-4 border-b border-scada-border space-y-4 bg-scada-panel/30">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-mono text-scada-text-dim">VMS SIGNBOARD</span>
+              <CheckCircle className="h-3 w-3 text-scada-text-dim cursor-pointer hover:text-scada-text" />
             </div>
+            <pre className="text-[10px] font-mono bg-scada-bg p-2 border border-scada-border/50 text-scada-text">
+              {ALERTS.vms}
+            </pre>
           </div>
-          <div className="p-3 space-y-4">
-             <div>
-               <div className="flex items-center justify-between mb-1">
-                 <span className="text-[9px] font-bold text-scada-text/50 uppercase tracking-widest">VMS SIGNBOARD</span>
-                 <Clipboard className="h-3 w-3 text-scada-text/30 cursor-pointer hover:text-scada-blue" />
-               </div>
-               <pre className="bg-black text-scada-yellow p-2 rounded text-xs font-mono leading-tight border border-scada-yellow/20">
-                 {llmOutput.alerts.vms}
-               </pre>
-             </div>
-             <div>
-               <div className="flex items-center justify-between mb-1">
-                 <span className="text-[9px] font-bold text-scada-text/50 uppercase tracking-widest">RADIO BULLETIN</span>
-                 <Clipboard className="h-3 w-3 text-scada-text/30 cursor-pointer hover:text-scada-blue" />
-               </div>
-               <p className="text-xs text-scada-text leading-tight bg-scada-bg p-2 rounded border border-scada-border/20">
-                 {llmOutput.alerts.radio}
-               </p>
-             </div>
-             <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[9px] font-bold text-scada-text/50 uppercase tracking-widest">SOCIAL MEDIA</span>
-                  <CheckCircle className="h-3 w-3 text-scada-green cursor-pointer" />
-                </div>
-                <p className="text-xs text-scada-blue leading-tight bg-scada-bg p-2 rounded border border-scada-blue/10">
-                  {llmOutput.alerts.social_media}
-                </p>
-             </div>
+          
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-mono text-scada-text-dim">RADIO BROADCAST</span>
+              <CheckCircle className="h-3 w-3 text-scada-text-dim cursor-pointer hover:text-scada-text" />
+            </div>
+            <p className="text-[10px] font-mono bg-scada-bg p-2 border border-scada-border/50 text-scada-text leading-relaxed">
+              {ALERTS.radio}
+            </p>
           </div>
         </div>
       )}
+
+      {/* LOGS */}
+      <SectionHeader icon={<FileText />} title="INCIDENT LOG" isExpanded={expanded.logs} onToggle={() => toggle('logs')} />
+      {expanded.logs && (
+        <div className="border-b border-scada-border">
+          {LOGS.map((log, i) => (
+            <div key={i} className="flex gap-3 px-4 py-2 text-[10px] font-mono border-b border-scada-border/50 last:border-0 hover:bg-scada-panel transition-colors">
+              <span className="text-scada-text-dim whitespace-nowrap">{log.time}</span>
+              <span className="text-scada-text">{log.event}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
     </div>
   );
 };
+
+const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; isExpanded: boolean; onToggle: () => void }> = ({ icon, title, isExpanded, onToggle }) => (
+  <button onClick={onToggle} className="w-full flex items-center justify-between p-3 border-b border-scada-border bg-scada-bg hover:bg-scada-panel transition-colors text-scada-text-dim">
+    <div className="flex items-center gap-3">
+      {React.cloneElement(icon as React.ReactElement, { className: 'h-4 w-4' })}
+      <span className="text-[11px] font-mono uppercase tracking-wider">{title}</span>
+    </div>
+    {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+  </button>
+);
 
 export default Sidebar;
