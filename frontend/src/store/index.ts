@@ -62,12 +62,17 @@ interface IncidentState {
   incidents: Incident[];
   diversionRoutes: any[];
   collisions: any[];
+  congestionZones: any[];
+  congestionRoutes: any[];
   setIncident: (incident: Incident | null) => void;
   setLLMOutput: (output: LLMOutput | null) => void;
   addIncident: (incident: Incident) => void;
   clearIncident: () => void;
   setDiversionRoutes: (routes: any[]) => void;
   setCollisions: (collisions: any[]) => void;
+  setCongestionZone: (zone: any) => void;
+  clearCongestionZone: (zoneId: string) => void;
+  setCongestionRoutes: (routes: any[]) => void;
   fetchIncidents: (city?: string) => Promise<void>;
 }
 
@@ -77,6 +82,8 @@ export const useIncidentStore = create<IncidentState>((set) => ({
   incidents: [],
   diversionRoutes: [],
   collisions: [],
+  congestionZones: [],
+  congestionRoutes: [],
   setIncident: (incident) =>
     set((state) => ({
       currentIncident: incident,
@@ -87,9 +94,22 @@ export const useIncidentStore = create<IncidentState>((set) => ({
   setLLMOutput: (output) => set({ llmOutput: output }),
   addIncident: (incident) =>
     set((state) => ({ incidents: [...state.incidents, incident] })),
-  clearIncident: () => set({ currentIncident: null, llmOutput: null, diversionRoutes: [], collisions: [] }),
+  clearIncident: () => set({ currentIncident: null, llmOutput: null, diversionRoutes: [], collisions: [], congestionZones: [], congestionRoutes: [] }),
   setDiversionRoutes: (routes) => set({ diversionRoutes: routes }),
   setCollisions: (collisions) => set({ collisions }),
+  setCongestionZone: (zone) =>
+    set((state) => ({
+      congestionZones: [
+        ...state.congestionZones.filter((z: any) => z.zone_id !== zone.zone_id),
+        zone,
+      ],
+    })),
+  clearCongestionZone: (zoneId) =>
+    set((state) => ({
+      congestionZones: state.congestionZones.filter((z: any) => z.zone_id !== zoneId),
+      congestionRoutes: state.congestionRoutes.filter((r: any) => r._zoneId !== zoneId),
+    })),
+  setCongestionRoutes: (routes) => set({ congestionRoutes: routes }),
   fetchIncidents: async (city?: string) => {
     try {
       const data = await api.getIncidents(city);

@@ -11,12 +11,12 @@ logger = logging.getLogger(__name__)
 class IncidentDetector:
     """Detects traffic incidents from speed anomalies in feed data."""
     
-    def __init__(self, baseline_window: int = 5, drop_threshold: float = 0.4, 
-                 min_adjacent_segments: int = 2, resolve_cooldown: int = 6):
+    def __init__(self, baseline_window: int = 5, drop_threshold: float = 0.5, 
+                 min_adjacent_segments: int = 3, resolve_cooldown: int = 12):
         self.baseline_window = baseline_window  # Number of frames for rolling baseline
-        self.drop_threshold = drop_threshold      # 40% speed drop = incident
+        self.drop_threshold = drop_threshold      # 50% speed drop = incident
         self.min_adjacent_segments = min_adjacent_segments
-        self.resolve_cooldown = resolve_cooldown  # Consecutive clear frames before resolve
+        self.resolve_cooldown = resolve_cooldown  # Consecutive clear frames before resolve (12 × 5s = 60s)
         
         # Rolling speed history per segment: {link_id: [speeds]}
         self._speed_history: dict[str, list[float]] = defaultdict(list)
@@ -31,7 +31,7 @@ class IncidentDetector:
         self._resolve_callbacks: list[Callable] = []
         # Cooldown between incidents
         self._last_incident_time: float = 0
-        self._incident_cooldown_seconds: float = 60
+        self._incident_cooldown_seconds: float = 120
     
     def on_incident(self, callback: Callable):
         """Register callback for incident detection events."""
