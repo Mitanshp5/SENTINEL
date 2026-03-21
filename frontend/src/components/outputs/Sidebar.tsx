@@ -40,7 +40,7 @@ const Sidebar: React.FC = () => {
     history: false,
   });
 
-  const { currentIncident, llmOutput, clearIncident, incidents } = useIncidentStore();
+  const { currentIncident, llmOutput, clearIncident, incidents, setIncident, setLLMOutput } = useIncidentStore();
   const { segments } = useFeedStore();
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const prevIncidentIdRef = useRef<string | null>(null);
@@ -296,7 +296,18 @@ const Sidebar: React.FC = () => {
                 .sort((a, b) => new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime())
                 .slice(0, 5)
                 .map((inc) => (
-                  <div key={inc.id} className="flex items-center gap-3 px-4 py-2 border-b border-scada-border/50 last:border-0 hover:bg-scada-panel transition-colors">
+                  <div
+                    key={inc.id}
+                    className="flex items-center gap-3 px-4 py-2 cursor-pointer border-b border-scada-border/50 last:border-0 hover:bg-scada-border/30 transition-colors"
+                    onClick={() => {
+                      setIncident(inc);
+                      api.getLLMOutput(inc.id).then((llm: any) => {
+                        if (llm && typeof llm === 'object') {
+                          setLLMOutput(llm);
+                        }
+                      }).catch(() => {});
+                    }}
+                  >
                     <span
                       className={`text-[9px] font-mono px-1.5 py-0.5 uppercase flex-shrink-0 ${
                         inc.severity === 'critical'

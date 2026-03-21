@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     llm_provider: str = "groq"  # groq | gemini | openrouter
     llm_model: str = "openai/gpt-oss-120b"
+    groq_model: str = "llama-3.1-8b-instant"  # Separate Groq-specific model
 
     # OpenRouteService
     ors_api_key: str = ""

@@ -75,6 +75,7 @@ async def lifespan(app: FastAPI):
     llm_service = LLMService(
         provider=settings.llm_provider,
         model=settings.llm_model,
+        groq_model=settings.groq_model,
         groq_key=settings.groq_api_key,
         gemini_key=settings.gemini_api_key,
         openrouter_key=settings.openrouter_api_key,
@@ -229,6 +230,16 @@ async def lifespan(app: FastAPI):
                 })
             else:
                 logger.warning("LLM returned no output for incident")
+                await ws_manager.broadcast({
+                    "type": "llm_output",
+                    "data": {
+                        "incident_id": incident_id,
+                        "signal_retiming": {"intersections": [], "raw_text": ""},
+                        "diversions": {"routes": [], "raw_text": ""},
+                        "alerts": {"vms": "LLM analysis unavailable — all providers rate limited", "radio": "", "social_media": ""},
+                        "narrative_update": "LLM analysis could not be generated — all providers are currently rate limited. The system will retry on the next incident.",
+                    },
+                })
 
         except Exception as e:
             logger.error(f"Incident handler error: {e}", exc_info=True)

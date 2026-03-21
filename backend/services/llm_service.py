@@ -11,9 +11,11 @@ class LLMService:
     """Manages LLM calls with Groq (primary), Gemini (fallback), OpenRouter (backup)."""
     
     def __init__(self, provider: str = "groq", model: str = "openai/gpt-oss-120b",
+                 groq_model: str = "llama-3.1-8b-instant",
                  groq_key: str = "", gemini_key: str = "", openrouter_key: str = ""):
         self.provider = provider
         self.model = model
+        self.groq_model = groq_model
         self.groq_key = groq_key
         self.gemini_key = gemini_key
         self.openrouter_key = openrouter_key
@@ -32,7 +34,7 @@ class LLMService:
                 elif provider == "openrouter" and self.openrouter_key:
                     return await self._call_openrouter(system_prompt, user_content, max_tokens)
             except Exception as e:
-                logger.warning(f"LLM provider {provider} failed: {e}")
+                logger.warning(f"LLM provider {provider} failed: {type(e).__name__}: {e}")
                 continue
         
         logger.error("All LLM providers failed")
@@ -43,9 +45,8 @@ class LLMService:
         from groq import Groq
         
         client = Groq(api_key=self.groq_key)
-        groq_model = self.model if ("llama" in self.model or "mixtral" in self.model) else "llama-3.3-70b-versatile"
         response = client.chat.completions.create(
-            model=groq_model,
+            model=self.groq_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content}
@@ -120,7 +121,7 @@ class LLMService:
                 elif provider == "openrouter" and self.openrouter_key:
                     return await self._call_openrouter_chat(messages, max_tokens)
             except Exception as e:
-                logger.warning(f"Chat LLM provider {provider} failed: {e}")
+                logger.warning(f"Chat LLM provider {provider} failed: {type(e).__name__}: {e}")
                 continue
         
         logger.error("All LLM providers failed for chat")
@@ -130,9 +131,8 @@ class LLMService:
         from groq import Groq
         
         client = Groq(api_key=self.groq_key)
-        groq_model = self.model if ("llama" in self.model or "mixtral" in self.model) else "llama-3.3-70b-versatile"
         response = client.chat.completions.create(
-            model=groq_model,
+            model=self.groq_model,
             messages=messages,
             max_tokens=max_tokens
         )

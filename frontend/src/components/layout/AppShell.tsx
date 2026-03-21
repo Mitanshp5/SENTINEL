@@ -1,6 +1,7 @@
 import React, { ReactNode, useState, useEffect } from 'react';
 import { ShieldAlert, Activity, Map as MapIcon, MessageSquare, Bell } from 'lucide-react';
 import { useFeedStore, useIncidentStore } from '../../store';
+import { api } from '../../services/api';
 
 interface AppShellProps {
   leftPanel: ReactNode;
@@ -22,7 +23,20 @@ const AppShell: React.FC<AppShellProps> = ({ leftPanel, centerPanel, rightPanel 
   useEffect(() => {
     fetchCityInfo();
     fetchBaselines();
-    fetchIncidents();
+    fetchIncidents().then(() => {
+      const state = useIncidentStore.getState();
+      const active = state.incidents
+        .filter((i) => i.status !== 'resolved')
+        .sort((a, b) => new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime());
+      if (active.length > 0 && !state.currentIncident) {
+        state.setIncident(active[0]);
+        api.getLLMOutput(active[0].id).then((llm) => {
+          if (llm && typeof llm === 'object') {
+            useIncidentStore.getState().setLLMOutput(llm);
+          }
+        }).catch(() => {});
+      }
+    });
   }, [fetchCityInfo, fetchBaselines, fetchIncidents]);
 
   useEffect(() => {
