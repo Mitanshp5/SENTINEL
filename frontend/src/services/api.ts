@@ -37,6 +37,12 @@ export const api = {
   getLLMOutput: (id: string) =>
     fetch(`${API_BASE}/api/incidents/${id}/llm-output`).then((r) => r.json()),
 
+  getIncidentRoutes: async (incidentId: string) => {
+    const res = await fetch(`${API_BASE}/api/incidents/${incidentId}/routes`);
+    if (!res.ok) return null;
+    return res.json();
+  },
+
   // Collisions
   getNearbyCollisions: (lat: number, lng: number, radius?: number) => {
     const params = new URLSearchParams({

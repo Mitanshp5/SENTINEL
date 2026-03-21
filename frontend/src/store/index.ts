@@ -190,6 +190,27 @@ export const useIncidentStore = create<IncidentState>((set) => ({
           detected_at: inc.detected_at,
         }));
         set({ incidents: mapped });
+        // Load stored routes for each active incident
+        const activeIncidents = mapped.filter((i: Incident) => i.status === 'active');
+        const routeResults = await Promise.allSettled(
+          activeIncidents.map((inc: Incident) => api.getIncidentRoutes(inc.id))
+        );
+        const loadedRoutes: IncidentRoutePair[] = [];
+        routeResults.forEach((result, idx) => {
+          if (result.status === 'fulfilled' && result.value?.blocked?.geometry?.coordinates?.length >= 2) {
+            const data = result.value;
+            loadedRoutes.push({
+              incidentId: activeIncidents[idx].id,
+              blocked: data.blocked,
+              alternate: data.alternate,
+              origin: data.origin,
+              destination: data.destination,
+            });
+          }
+        });
+        if (loadedRoutes.length > 0) {
+          set({ incidentRoutes: loadedRoutes });
+        }
       }
     } catch (e) {
       console.error('Failed to fetch incidents:', e);

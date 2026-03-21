@@ -105,8 +105,8 @@ const TrafficMap: React.FC = () => {
           attribution='&copy; CARTO'
         />
 
-        {/* Traffic Speed Segments */}
-        {segments.map((seg) => {
+        {/* Traffic Speed Segments — only shown when there are active incidents */}
+        {incidents.filter(i => i.status === 'active').length > 0 && segments.map((seg) => {
           const isBlocked = allBlockedCoords.length > 0 && isNearBlockedRoute(seg.lat, seg.lng, allBlockedCoords);
           const color = isBlocked ? '#ef4444' : getSpeedColor(seg.speed);
           const radius = isBlocked ? 9 : (seg.speed < 5 ? 8 : 6);
