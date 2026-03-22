@@ -82,58 +82,6 @@ class RoutingService:
         self._ors_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._ors_cache_ttl_sec = 60.0
         self._http_timeout = 12.0
-
-        # ORS: alternative_routes is incompatible with >2 waypoints
-        if not has_waypoint:
-            body["alternative_routes"] = {"target_count": 3, "weight_factor": 2.0, "share_factor": 0.3}
-        
-        if avoid_polygons_list:
-            body["options"]["avoid_polygons"] = {
-                "type": "MultiPolygon",
-                "coordinates": [[p] for p in avoid_polygons_list]
-            }
-        elif avoid_polygon:
-            body["options"]["avoid_polygons"] = {
-                "type": "MultiPolygon",
-                "coordinates": [[avoid_polygon]]
-            }
-        elif avoid_coords:
-            body["options"]["avoid_polygons"] = {
-                "type": "MultiPolygon",
-                "coordinates": [[self._coord_to_polygon(c, 0.0005)] for c in avoid_coords]
-            }
-        
-        for attempt in range(2):
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    response = await client.post(
-                        ORS_DIRECTIONS_URL,
-                        headers={
-                            "Authorization": self.api_key,
-                            "Content-Type": "application/json"
-                        },
-                        json=body
-                    )
-                    if not response.is_success:
-                        logger.error(f"ORS HTTP {response.status_code}: {response.text}")
-                    response.raise_for_status()
-                    result = response.json()
-                
-                # Pick the best alternative if multiple returned
-                result = self._pick_best_alternative(result)
-                self._cache[cache_key] = result
-                logger.info(f"Route computed: {origin} -> {destination}")
-                return result
-                
-            except Exception as e:
-                logger.error(f"ORS routing failed (attempt {attempt+1}): {e}")
-                if attempt == 0:
-                    import asyncio
-                    await asyncio.sleep(1)
-                    continue
-                # Return None instead of straight-line mock — routes should follow roads
-                logger.warning("ORS failed, returning None (no straight-line fallback)")
-                return None
     
     def _is_valid_geometry(self, geometry: dict | None, min_points: int = 5) -> bool:
         """Check if geometry is valid (has enough points to be a real road route).
