@@ -10,6 +10,12 @@ import torch
 
 warnings.filterwarnings('ignore')
 
+# Force PyTorch to use the RTX 4050 exclusively and enable cuDNN auto-tuner
+# (benchmark=True caches the fastest kernel for fixed 640×640 inputs)
+os.environ.setdefault('CUDA_VISIBLE_DEVICES', '0')
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.deterministic = False
+
 # =====================================================================
 # CUDA DEVICE DETECTION
 # Force CUDA context initialisation before querying availability so the
