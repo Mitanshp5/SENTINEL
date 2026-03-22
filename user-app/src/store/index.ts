@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { TrafficSegment, Incident, LLMOutput, ChatMessage } from '../types';
 import { api } from '../services/api';
+import { inferIncidentCity, normalizeCityCode } from '../utils/city';
 
 // Hardcoded city centers so the map snaps immediately on click
 const CITY_CENTERS: Record<string, { lat: number; lng: number; zoom: number }> = {
@@ -58,9 +59,8 @@ export const useFeedStore = create<FeedState>((set) => ({
   fetchCityInfo: async () => {
     try {
       const data = await api.getCity();
-      // Use backend city but always use our hardcoded center for reliability
-      const city = data.city as 'nyc' | 'chandigarh';
-      set({ city, cityCenter: CITY_CENTERS[city] ?? data.center });
+      // Keep local city selection stable; only refresh center details.
+      set((state) => ({ cityCenter: state.cityCenter ?? data.center }));
     } catch (e) {
       console.error('Failed to fetch city info:', e);
     }
@@ -73,6 +73,7 @@ interface IncidentState {
   incidents: Incident[];
   diversionRoutes: any[];
   collisions: any[];
+  congestionZones: any[];
   setIncident: (incident: Incident | null) => void;
   setLLMOutput: (output: LLMOutput | null) => void;
   addIncident: (incident: Incident) => void;
@@ -80,6 +81,9 @@ interface IncidentState {
   setDiversionRoutes: (routes: any[]) => void;
   setCollisions: (collisions: any[]) => void;
   setIncidents: (incidents: Incident[]) => void;
+  setCongestionZone: (zone: any) => void;
+  clearCongestionZone: (zoneId: string) => void;
+  setCongestionZones: (zones: any[]) => void;
 }
 
 export const useIncidentStore = create<IncidentState>((set) => ({
@@ -88,20 +92,84 @@ export const useIncidentStore = create<IncidentState>((set) => ({
   incidents: [],
   diversionRoutes: [],
   collisions: [],
+  congestionZones: [],
   setIncident: (incident) =>
-    set((state) => ({
-      currentIncident: incident,
-      incidents: incident
-        ? [...state.incidents.filter((i) => i.id !== incident.id), incident]
-        : state.incidents,
-    })),
+    set((state) => {
+      if (!incident) {
+        return { currentIncident: null };
+      }
+      const inferred = inferIncidentCity({
+        city: incident.city,
+        on_street: incident.on_street,
+        location: { coordinates: [incident.location?.lng, incident.location?.lat] },
+      });
+      const normalized: Incident = {
+        ...incident,
+        city: inferred ?? incident.city,
+      };
+      return {
+        currentIncident: normalized,
+        incidents: [...state.incidents.filter((i) => i.id !== normalized.id), normalized],
+      };
+    }),
   setLLMOutput: (output) => set({ llmOutput: output }),
   addIncident: (incident) =>
-    set((state) => ({ incidents: [...state.incidents, incident] })),
+    set((state) => {
+      const inferred = inferIncidentCity({
+        city: incident.city,
+        on_street: incident.on_street,
+        location: { coordinates: [incident.location?.lng, incident.location?.lat] },
+      });
+      const normalized = { ...incident, city: inferred ?? incident.city };
+      return { incidents: [...state.incidents, normalized] };
+    }),
   clearIncident: () => set({ currentIncident: null, llmOutput: null, diversionRoutes: [], collisions: [] }),
   setDiversionRoutes: (routes) => set({ diversionRoutes: routes }),
   setCollisions: (collisions) => set({ collisions }),
-  setIncidents: (incidents) => set({ incidents }),
+  setIncidents: (incidents) =>
+    set((state) => {
+      const normalized = (incidents || []).map((inc: any) => {
+        const inferred = inferIncidentCity(inc);
+        return { ...inc, city: inferred ?? normalizeCityCode(inc?.city) ?? inc?.city };
+      });
+      const currentId = state.currentIncident?.id;
+      return {
+        incidents: normalized,
+        currentIncident: currentId
+          ? (normalized.find((i: any) => i.id === currentId) ?? state.currentIncident)
+          : state.currentIncident,
+      };
+    }),
+  setCongestionZone: (zone) =>
+    set((state) => {
+      const cityFromCenter = normalizeCityCode(
+        inferIncidentCity({
+          city: zone?.city,
+          location: { coordinates: zone?.center || zone?.location?.coordinates || [] },
+        }),
+      );
+      const normalized = {
+        ...zone,
+        city: normalizeCityCode(zone?.city) ?? cityFromCenter ?? useFeedStore.getState().city,
+      };
+      return {
+        congestionZones: [
+          ...state.congestionZones.filter((z: any) => z.zone_id !== normalized.zone_id),
+          normalized,
+        ],
+      };
+    }),
+  clearCongestionZone: (zoneId) =>
+    set((state) => ({
+      congestionZones: state.congestionZones.filter((z: any) => z.zone_id !== zoneId),
+    })),
+  setCongestionZones: (zones) =>
+    set({
+      congestionZones: (zones || []).map((z: any) => ({
+        ...z,
+        city: normalizeCityCode(z?.city) ?? useFeedStore.getState().city,
+      })),
+    }),
 }));
 
 interface ChatState {

@@ -26,14 +26,18 @@ def _load_yolo_singleton() -> YOLO:
         torch.cuda.set_device(0)
     m = YOLO(config.YOLO_MODEL)
     m.to(config.YOLO_DEVICE)
-    # Warm up: one silent dummy inference so first real frame is instant
+    # Warm up: two silent dummy inferences to prime cuDNN kernel cache.
+    # NOTE: do NOT call m.model.half() here — ultralytics fuses conv/bn on first
+    # predict call and requires float32 weights at that point. FP16 is handled
+    # automatically via half=True in each predict() call.
     import numpy as np
     _dummy = np.zeros((640, 640, 3), dtype='uint8')
-    m(_dummy, device=config.YOLO_DEVICE,
-      half=config.YOLO_DEVICE.startswith('cuda'),
-      imgsz=640, verbose=False)
+    for _ in range(2):
+        m(_dummy, device=config.YOLO_DEVICE,
+          half=config.YOLO_DEVICE.startswith('cuda'),
+          imgsz=640, verbose=False)
     device_str = next(m.model.parameters()).device
-    logger.info(f"[YOLO] Model ready on {device_str}")
+    logger.info(f"[YOLO] Model ready on {device_str} (FP16 per-call={config.YOLO_DEVICE.startswith('cuda')})")
     return m
 
 _YOLO_INSTANCE: YOLO = _load_yolo_singleton()
@@ -72,7 +76,10 @@ async def upload_surveillance_video(
         "filepath": input_video_path,
         "lat": lat, "lng": lng, 
         "intersection_name": intersection_name, 
-        "city": city
+        "city": city,
+        "status": "ready",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
     }
 
     return {
@@ -87,6 +94,7 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
         raise HTTPException(status_code=404, detail="Feed not found")
         
     feed_info = pending_feeds[feed_id]
+    feed_info["status"] = "streaming"
     on_incident = getattr(request.app.state, "on_incident", None)
     ws_manager = getattr(request.app.state, "ws_manager", None)
     
@@ -110,9 +118,85 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
         # Generator state
         incident_triggered = False
         frame_count = 0
-        _target_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        _frame_interval = 1.0 / (_target_fps / max(1, config.FRAME_SKIP))  # real-time pacing
-        _last_sent = time.monotonic()
+        trigger_frame = max(1, int(os.getenv("SURVEILLANCE_TRIGGER_FRAME", "5")))
+
+        def _dispatch_incident(current_frame_count: int):
+            nonlocal incident_triggered
+            if incident_triggered or on_incident is None:
+                return
+            incident_triggered = True
+
+            async def _record_cctv_event():
+                event_doc = {
+                    "version": "v2",
+                    "city": feed_info["city"],
+                    "incident_id": None,
+                    "camera_id": f"cam_{feed_id[:6]}",
+                    "camera_location": {
+                        "type": "Point",
+                        "coordinates": [feed_info["lng"], feed_info["lat"]],
+                    },
+                    "event_type": "incident_confirmed",
+                    "confidence": 0.92,
+                    "detected_at": datetime.now(timezone.utc),
+                    "metadata": {
+                        "source": "surveillance_stream",
+                        "intersection_name": feed_info["intersection_name"],
+                        "frames_processed": current_frame_count,
+                    },
+                }
+                if db.cctv_events is not None:
+                    try:
+                        await db.cctv_events.insert_one(event_doc)
+                    except Exception:
+                        pass
+                if ws_manager is not None:
+                    try:
+                        await ws_manager.broadcast_to_city(
+                            feed_info["city"],
+                            {"type": "cctv_event", "data": {**event_doc, "version": "v2"}},
+                        )
+                    except Exception:
+                        pass
+
+            incident = {
+                "city": feed_info["city"],
+                "status": "active",
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+                "resolved_at": None,
+                "severity": "critical",
+                "location": {
+                    "type": "Point",
+                    "coordinates": [feed_info["lng"], feed_info["lat"]],
+                },
+                "on_street": feed_info["intersection_name"],
+                "cross_street": "",
+                "affected_segment_ids": ["surv_cam_001"],
+                "affected_segments": [
+                    {
+                        "link_id": "surv_cam_001",
+                        "link_name": feed_info["intersection_name"],
+                        "speed": 0,
+                        "baseline": 25.0,
+                        "drop_pct": 100.0,
+                        "lat": feed_info["lat"],
+                        "lng": feed_info["lng"],
+                        "status": "BLOCKED",
+                    }
+                ],
+                "source": "surveillance_camera",
+                "crash_record_id": None,
+            }
+            try:
+                asyncio.run_coroutine_threadsafe(_record_cctv_event(), main_loop)
+                asyncio.run_coroutine_threadsafe(on_incident(incident), main_loop)
+                logger.info(
+                    "[SURVEILLANCE] Incident dispatched for %s (frames=%s)",
+                    feed_info["intersection_name"],
+                    current_frame_count,
+                )
+            except Exception:
+                logger.exception("[SURVEILLANCE ERROR] Failed to dispatch incident from stream thread")
         
         try:
             while cap.isOpened():
@@ -160,78 +244,9 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
                 _, accident_flags = tracker.update_tracks(detections, frame)
                 vis_frame = create_advanced_visualization(frame, detections, accident_flags)
                 
-                # Check for collision (more lenient for demo)
-                if (len(accident_flags) > 0 or frame_count == 30) and not incident_triggered and on_incident:
-                    incident_triggered = True
-
-                    async def _record_cctv_event():
-                        event_doc = {
-                            "version": "v2",
-                            "city": feed_info["city"],
-                            "incident_id": None,
-                            "camera_id": f"cam_{feed_id[:6]}",
-                            "camera_location": {
-                                "type": "Point",
-                                "coordinates": [feed_info["lng"], feed_info["lat"]],
-                            },
-                            "event_type": "incident_confirmed",
-                            "confidence": 0.92,
-                            "detected_at": datetime.now(timezone.utc),
-                            "metadata": {
-                                "source": "surveillance_stream",
-                                "intersection_name": feed_info["intersection_name"],
-                                "frames_processed": frame_count,
-                            },
-                        }
-                        if db.cctv_events is not None:
-                            try:
-                                await db.cctv_events.insert_one(event_doc)
-                            except Exception:
-                                pass
-                        if ws_manager is not None:
-                            try:
-                                await ws_manager.broadcast_to_city(
-                                    feed_info["city"],
-                                    {"type": "cctv_event", "data": {**event_doc, "version": "v2"}},
-                                )
-                            except Exception:
-                                pass
-
-                    incident = {
-                        "city": feed_info["city"],
-                        "status": "active",
-                        "detected_at": datetime.now(timezone.utc).isoformat(),
-                        "resolved_at": None,
-                        "severity": "critical",
-                        "location": {
-                            "type": "Point",
-                            "coordinates": [feed_info["lng"], feed_info["lat"]],
-                        },
-                        "on_street": feed_info["intersection_name"],
-                        "cross_street": "",
-                        "affected_segment_ids": ["surv_cam_001"],
-                        "affected_segments": [
-                            {
-                                "link_id": "surv_cam_001",
-                                "link_name": feed_info["intersection_name"],
-                                "speed": 0,
-                                "baseline": 25.0,
-                                "drop_pct": 100.0,
-                                "lat": feed_info["lat"],
-                                "lng": feed_info["lng"],
-                                "status": "BLOCKED",
-                            }
-                        ],
-                        "source": "surveillance_camera",
-                        "crash_record_id": None,
-                    }
-                    try:
-                        asyncio.run_coroutine_threadsafe(_record_cctv_event(), main_loop)
-                        # Schedule the coroutine execution safely in the main loop (Fire and forget)
-                        asyncio.run_coroutine_threadsafe(on_incident(incident), main_loop)
-                        print(f"[SURVEILLANCE] Successfully dispatched Sentinel incident for {feed_info['intersection_name']}!")
-                    except Exception as e:
-                        print(f"[SURVEILLANCE ERROR] Failed to trigger incident from generator thread: {e}")
+                # Demo policy: dispatch quickly if accident flags appear OR after a short warmup.
+                if len(accident_flags) > 0 or frame_count >= trigger_frame:
+                    _dispatch_incident(frame_count)
                         
                 # Encode to MJPEG — quality 75 keeps size small and encoding fast
                 encode_params = [cv2.IMWRITE_JPEG_QUALITY, 75]
@@ -240,18 +255,31 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
                 
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                # Pace to real-time FPS — GPU is faster than the video's native rate
-                now = time.monotonic()
-                elapsed = now - _last_sent
-                if elapsed < _frame_interval:
-                    time.sleep(_frame_interval - elapsed)
-                _last_sent = time.monotonic()
+                # No sleep — stream at max GPU throughput
                 
         finally:
+            # Fallback: if stream ended before the trigger frame, still dispatch once for demo reliability.
+            if not incident_triggered and frame_count > 0:
+                _dispatch_incident(frame_count)
             cap.release()
+            if feed_id in pending_feeds:
+                pending_feeds[feed_id]["status"] = "completed"
+                pending_feeds[feed_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
             # Optionally clean up the video file after streaming is done
             if os.path.exists(feed_info["filepath"]):
                 try: os.remove(feed_info["filepath"])
                 except: pass
 
     return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@router.get("/status/{feed_id}")
+async def surveillance_feed_status(feed_id: str):
+    feed_info = pending_feeds.get(feed_id)
+    if feed_info is None:
+        raise HTTPException(status_code=404, detail="Feed not found")
+    return {
+        "feed_id": feed_id,
+        "status": feed_info.get("status", "unknown"),
+        "completed_at": feed_info.get("completed_at"),
+    }

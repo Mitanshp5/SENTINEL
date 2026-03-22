@@ -50,7 +50,7 @@ const AppShell: React.FC<AppShellProps> = ({ leftPanel, centerPanel, rightPanel 
       });
 
       // Load default congestion zones for the city
-      api.getCongestionZones(city).then((zones: any[]) => {
+      api.getCongestionZones(city, 'active,permanent').then((zones: any[]) => {
         if (Array.isArray(zones)) {
           const { setCongestionZone } = useIncidentStore.getState();
           zones.forEach((z: any) => setCongestionZone(z));

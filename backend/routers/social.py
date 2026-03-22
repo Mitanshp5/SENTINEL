@@ -34,6 +34,26 @@ def _default_users_for_city(city: str) -> list[dict]:
     return [u for u in DEFAULT_SOCIAL_USERS if u.get("city") == city_l]
 
 
+def _resolve_city_recipients(city: str, db_users: list[dict] | None = None) -> list[str]:
+    """
+    Resolve all recipients for a city. If DB users are missing/empty, fallback to
+    seeded defaults so publish always reaches the full city audience.
+    """
+    candidates = db_users if db_users else _default_users_for_city(city)
+    recipients: list[str] = []
+    seen: set[str] = set()
+    for u in candidates:
+        name = str(u.get("name", "")).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        recipients.append(name)
+    return recipients
+
+
 @router.get("/users")
 async def get_social_users(city: str = Query(..., description="nyc or chandigarh")):
     city_l = city.lower().strip()
@@ -76,12 +96,12 @@ async def publish_social_alert(body: PublishSocialAlertRequest, request: Request
     if not message:
         raise HTTPException(status_code=400, detail="Alert message is required")
 
-    recipients: list[str] = []
+    recipients: list[str]
     if db.user_profiles is None:
-        recipients = [u["name"] for u in _default_users_for_city(city)]
+        recipients = _resolve_city_recipients(city)
     else:
         users = await db.user_profiles.find({"city": city}).sort("name", 1).to_list(200)
-        recipients = [u.get("name") for u in users if u.get("name")]
+        recipients = _resolve_city_recipients(city, users)
 
     alert_doc = {
         "city": city,

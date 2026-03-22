@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../services/api';
 import { useFeedStore, useIncidentStore } from '../../store';
+import { inferIncidentCity } from '../../utils/city';
 
 // ─── City Streets ─────────────────────────────────────
 const CITY_STREETS: Record<string, string[]> = {
@@ -43,12 +44,6 @@ const SeverityConfig = {
 const formatTime = (iso: string) => {
   try { return new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }); }
   catch { return iso; }
-};
-
-const normalizeCity = (value: unknown): 'nyc' | 'chandigarh' | null => {
-  const v = String(value || '').toLowerCase().trim();
-  if (v === 'nyc' || v === 'chandigarh') return v;
-  return null;
 };
 
 // ─── Street Search Dropdown ──────────────────────────
@@ -132,7 +127,9 @@ const Sidebar: React.FC = () => {
       if (Array.isArray(data)) {
         // Guard against race conditions when city is switched while requests are in-flight.
         if (useFeedStore.getState().city !== targetCity) return;
-        const scoped = data.filter((inc: any) => normalizeCity(inc?.city) === targetCity);
+        const scoped = data
+          .filter((inc: any) => inferIncidentCity(inc) === targetCity)
+          .map((inc: any) => ({ ...inc, city: inferIncidentCity(inc) ?? targetCity }));
         setLiveIncidents(scoped);
         setIncidents(scoped);
       }
@@ -146,7 +143,7 @@ const Sidebar: React.FC = () => {
     return () => clearInterval(interval);
   }, [city]);
 
-  const cityLiveIncidents = liveIncidents.filter((inc: any) => normalizeCity(inc?.city) === city);
+  const cityLiveIncidents = liveIncidents.filter((inc: any) => inferIncidentCity(inc) === city);
 
   const handleSubmit = async () => {
     if (!photoBase64) { setLocError('A photo of the incident is compulsory.'); return; }

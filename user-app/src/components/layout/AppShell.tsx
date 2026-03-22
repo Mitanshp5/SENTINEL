@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import type { ReactElement } from 'react';
 import { ShieldAlert, Map as MapIcon, Home, MessageCircle, Share2 } from 'lucide-react';
-import { useFeedStore } from '../../store';
+import { useFeedStore, useIncidentStore } from '../../store';
+import { api } from '../../services/api';
 
 interface AppShellProps {
   leftPanel: React.ReactNode; 
@@ -17,11 +18,25 @@ const CITY_BGS = {
 
 const AppShell: React.FC<AppShellProps> = ({ leftPanel, centerPanel, rightPanel, socialPanel }) => {
   const { city: activeCity, switchCity: setActiveCity, fetchCityInfo } = useFeedStore();
+  const setCongestionZones = useIncidentStore((s) => s.setCongestionZones);
   const [activeTab, setActiveTab] = useState<'home' | 'map' | 'copilot' | 'social'>('home');
 
   useEffect(() => {
     fetchCityInfo();
   }, [fetchCityInfo]);
+
+  useEffect(() => {
+    api
+      .getCongestionZones(activeCity, 'active,permanent')
+      .then((zones) => {
+        if (Array.isArray(zones)) {
+          setCongestionZones(zones);
+        }
+      })
+      .catch(() => {
+        setCongestionZones([]);
+      });
+  }, [activeCity, setCongestionZones]);
 
   return (
     <div className="relative h-screen w-screen overflow-hidden text-[#1A1A1A] font-sans selection:bg-[#FF5A5F]/30 bg-[#FAFAFA]">

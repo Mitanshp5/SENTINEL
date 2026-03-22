@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Popup } from 'react-leaflet';
+import { useFeedStore } from '../../store';
 
 interface CameraPopupProps {
   cam: {
@@ -12,14 +13,27 @@ interface CameraPopupProps {
 }
 
 export const CameraPopup: React.FC<CameraPopupProps> = ({ cam, onClose }) => {
+  const city = useFeedStore((s) => s.city);
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+  const clearAndClose = useCallback(() => {
+    setResult(null);
+    setFile(null);
+    setFeedError(null);
+    setError(null);
+    onClose();
+  }, [onClose]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       setFile(e.target.files[0]);
+      setError(null);
+      setFeedError(null);
     }
   };
 
@@ -27,6 +41,7 @@ export const CameraPopup: React.FC<CameraPopupProps> = ({ cam, onClose }) => {
     if (!file) return;
     setLoading(true);
     setError(null);
+    setFeedError(null);
     setResult(null);
 
     const formData = new FormData();
@@ -34,16 +49,18 @@ export const CameraPopup: React.FC<CameraPopupProps> = ({ cam, onClose }) => {
     formData.append('lat', cam.lat.toString());
     formData.append('lng', cam.lng.toString());
     formData.append('intersection_name', cam.name);
-    formData.append('city', 'nyc');
+    formData.append('city', city);
 
     try {
-      const response = await fetch('http://localhost:8000/api/surveillance/upload', {
+      const response = await fetch(`${API_BASE}/api/surveillance/upload`, {
         method: 'POST',
         body: formData,
       });
 
-      if (!response.ok) throw new Error('Upload failed');
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.detail || data?.message || `Upload failed (${response.status})`);
+      }
       setResult(data);
     } catch (err: any) {
       setError(err.message || 'Error uploading video');
@@ -51,6 +68,28 @@ export const CameraPopup: React.FC<CameraPopupProps> = ({ cam, onClose }) => {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!result?.feed_id) return;
+    let stopped = false;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/surveillance/status/${result.feed_id}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!stopped && data?.status === 'completed') {
+          clearAndClose();
+        }
+      } catch {
+        // Network hiccups are ignored; polling continues.
+      }
+    }, 1200);
+
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [API_BASE, result?.feed_id, clearAndClose]);
 
   return (
     <Popup
@@ -60,7 +99,11 @@ export const CameraPopup: React.FC<CameraPopupProps> = ({ cam, onClose }) => {
       minWidth={340}
       maxWidth={420}
     >
-      <div className="bg-[#111111] text-gray-200 font-mono p-0 rounded-lg overflow-hidden min-w-[320px]">
+      <div
+        className="bg-[#111111] text-gray-200 font-mono p-0 rounded-lg overflow-hidden min-w-[320px]"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <div className="flex justify-between items-center bg-[#0a0a0a] px-3 py-2 border-b border-gray-800">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
@@ -73,17 +116,35 @@ export const CameraPopup: React.FC<CameraPopupProps> = ({ cam, onClose }) => {
           {result ? (
             <div className="flex flex-col gap-2">
               <div className="relative aspect-video bg-black border border-gray-800 rounded">
-                <img
-                  src={`http://localhost:8000/api/surveillance/feed/${result.feed_id}`}
-                  alt="Live Inference Feed"
-                  className="w-full h-full object-contain"
-                />
+                {!feedError ? (
+                  <img
+                    src={`${API_BASE}/api/surveillance/feed/${result.feed_id}`}
+                    alt="Live Inference Feed"
+                    className="w-full h-full object-contain"
+                    onError={() =>
+                      setFeedError('Live feed unavailable. Try another video file or re-inject.')
+                    }
+                  />
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-center px-3 gap-2">
+                    <span className="text-[10px] text-amber-300">{feedError}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResult(null);
+                        setFile(null);
+                        setFeedError(null);
+                      }}
+                      className="text-[10px] py-1 px-2 bg-gray-800 hover:bg-gray-700 rounded transition-colors"
+                    >
+                      Retry Upload
+                    </button>
+                  </div>
+                )}
               </div>
               <button
-                onClick={() => {
-                  setResult(null);
-                  setFile(null);
-                }}
+                type="button"
+                onClick={clearAndClose}
                 className="w-full mt-2 text-xs py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-center transition-colors"
               >
                 Clear Feed
@@ -105,6 +166,7 @@ export const CameraPopup: React.FC<CameraPopupProps> = ({ cam, onClose }) => {
                   className="w-full text-[10px] text-gray-400 file:cursor-pointer file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-[10px] file:font-semibold file:bg-gray-800 file:text-gray-300 hover:file:bg-gray-700"
                 />
                 <button
+                  type="button"
                   onClick={handleUpload}
                   disabled={!file || loading}
                   className="w-full py-1.5 text-xs font-bold rounded flex justify-center items-center bg-blue-600/90 hover:bg-blue-600 text-white disabled:bg-gray-800 disabled:text-gray-600 transition-colors"

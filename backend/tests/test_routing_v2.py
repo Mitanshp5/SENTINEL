@@ -116,6 +116,24 @@ class RoutingV2Tests(unittest.TestCase):
         self.assertEqual(route["geometry"]["coordinates"], [])
         self.assertGreaterEqual(score, 9999.0)
 
+    def test_fallback_blocked_does_not_emit_synthetic_line(self):
+        route, source = self.svc._fallback_blocked_route(
+            graph={"nodes": {}, "edges": {}},
+            origin=[76.7788, 30.7357],
+            destination=[76.7788, 30.7466],
+            incident=(76.7788, 30.7412),
+            on_street="Unknown Street",
+            city="unknown_city",
+            feed_segments=[],
+            severity="major",
+        )
+        self.assertEqual(source, "unavailable")
+        self.assertEqual(route["geometry"]["coordinates"], [])
+
+    def test_geometry_quality_rejects_tiny_line(self):
+        tiny = [[-73.99, 40.75], [-73.989999, 40.750001]]
+        self.assertFalse(self.svc._passes_geometry_quality(tiny))
+
     def test_select_incident_waypoint_prefers_street_matched_feed_point(self):
         waypoint = self.svc._select_incident_waypoint(
             incident_lng=76.7788,
@@ -169,6 +187,8 @@ class RoutingV2Tests(unittest.TestCase):
         self.assertEqual(out["meta"].get("ors_requests"), 0)
         self.assertEqual(out["meta"].get("ors_success"), 0)
         self.assertEqual(out["meta"].get("degradation_reason"), "ors_transport_unavailable")
+        self.assertEqual(out["meta"].get("route_quality"), "unavailable")
+        self.assertEqual(out["meta"].get("alternate_source"), "unavailable")
 
     def test_congestion_route_returns_blocked_and_alternate(self):
         out = asyncio.run(

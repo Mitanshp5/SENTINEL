@@ -149,8 +149,8 @@ export const api = {
       body: JSON.stringify(params),
     }).then((r) => r.json()),
 
-  getCongestionZones: (city: string = 'nyc') =>
-    fetch(`${API_BASE}/api/congestion/zones/default?city=${city}`).then((r) => r.json()),
+  getCongestionZones: (city: string = 'nyc', statuses: string = 'active,permanent') =>
+    fetch(`${API_BASE}/api/congestion/zones/visible?city=${city}&statuses=${encodeURIComponent(statuses)}`).then((r) => r.json()),
 
   getDemoStreets: (city: string = 'nyc') =>
     fetch(`${API_BASE}/api/demo/streets?city=${city}`).then((r) => r.json()),
