@@ -11,68 +11,80 @@ import torch
 warnings.filterwarnings('ignore')
 
 # =====================================================================
-# CUDA DEVICE DETECTION
-# Force CUDA context initialisation before querying availability so the
-# check is reliable even when this module is imported inside a thread.
+# GPU TOGGLE: Set to True for Intel/OpenVINO GPU, False for NVIDIA CUDA
 # =====================================================================
-try:
-    if torch.cuda.is_available():
-        torch.cuda.init()
-        _ = torch.zeros(1, device='cuda')  # establish CUDA context now
-        _CUDA_READY = True
-    else:
-        _CUDA_READY = False
-except Exception:
-    _CUDA_READY = False
+openvinoGPU = True  # Toggle this to switch between OpenVINO and CUDA
+# =====================================================================
 
-if _CUDA_READY:
-    _gpu_name = torch.cuda.get_device_name(0)
-    print(f"\n[INIT] CUDA detected! Using NVIDIA GPU natively: {_gpu_name}")
+if openvinoGPU:
+    # -----------------------------------------------------------------
+    # OPTIMIZED OPENVINO GPU MODE
+    # -----------------------------------------------------------------
+    import openvino as ov
+    print("\n[INIT] OpenVINO Mode Selected. Applying Hardware Acceleration Patch...")
+    
+    original_compile = ov.Core.compile_model
+    def patched_compile(self, model, device_name=None, config=None):
+        print(">> Intercepted AutoBackend. Forcing compile_model on 'GPU' <<")
+        return original_compile(self, model, "GPU", config)
+    
+    # Apply runtime patch for Ultralytics OpenVINO backend
+    ov.Core.compile_model = patched_compile
 else:
-    # Only fall back to OpenVINO when there is genuinely no NVIDIA GPU
+    # -----------------------------------------------------------------
+    # OPTIMIZED NVIDIA CUDA GPU MODE
+    # -----------------------------------------------------------------
+    # Force PyTorch to use the primary GPU and enable cuDNN auto-tuner
+    os.environ.setdefault('CUDA_VISIBLE_DEVICES', '0')
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
+    
     try:
-        import openvino as ov
-        original_compile = ov.Core.compile_model
-
-        def patched_compile(self, model, device_name=None, config=None):
-            print(">> Intercepted AutoBackend. Forcing compile_model on 'GPU' <<")
-            return original_compile(self, model, "GPU", config)
-
-        ov.Core.compile_model = patched_compile
-        print("\n[INIT] No CUDA GPU found. Applying OpenVINO Hardware Acceleration Patch...")
-    except ImportError:
-        print("\n[INIT] No CUDA GPU and OpenVINO not available. Falling back to CPU.")
-# =====================================================================
+        if torch.cuda.is_available():
+            torch.cuda.init()
+            _ = torch.zeros(1, device='cuda')  # Establish CUDA context immediately
+            _gpu_name = torch.cuda.get_device_name(0)
+            print(f"\n[INIT] CUDA Mode Selected! Using NVIDIA GPU: {_gpu_name}")
+            _CUDA_READY = True
+        else:
+            print("\n[INIT] CUDA selected but not available. Falling back to CPU.")
+            _CUDA_READY = False
+    except Exception as e:
+        print(f"\n[INIT] CUDA initialization failed: {e}. Falling back to CPU.")
+        _CUDA_READY = False
 
 class AdvancedAccidentConfig:
     """Advanced configuration for accident detection system."""
 
-    # Always use the standard PyTorch .pt model — it works for both CUDA and CPU.
-    # Device selection is handled at inference time via YOLO_DEVICE.
-    YOLO_MODEL = 'yolov8m.pt'
-    YOLO_DEVICE = 'cuda:0' if _CUDA_READY else 'cpu'
+    if openvinoGPU:
+        YOLO_MODEL = 'yolov8m_openvino_model/'
+        YOLO_DEVICE = 'cpu'  # OpenVINO handles its own device via the patch
+    else:
+        YOLO_MODEL = 'yolov8m.pt'
+        YOLO_DEVICE = 'cuda:0' if (not openvinoGPU and torch.cuda.is_available()) else 'cpu'
+
     ACCIDENT_MODEL_PATH = 'accident_detection_model.h5'
-    
+
     VEHICLE_CLASSES = [2, 3, 5, 7]  # Car, motorcycle, bus, truck
     CONFIDENCE_THRESHOLD = 0.6
     IOU_THRESHOLD = 0.5
-    
-    SPEED_CHANGE_THRESHOLD = 0.7 
-    DIRECTION_CHANGE_THRESHOLD = 45 
-    COLLISION_DISTANCE = 50  
-    ACCIDENT_FRAMES_THRESHOLD = 10  
-    
+
+    SPEED_CHANGE_THRESHOLD = 0.7
+    DIRECTION_CHANGE_THRESHOLD = 45
+    COLLISION_DISTANCE = 50
+    ACCIDENT_FRAMES_THRESHOLD = 10
+
     TRACKING_HISTORY = 30
     OPTICAL_FLOW_WINDOW = 5
-    
+
     COLORS = {
-        'normal': (0, 255, 0),      
-        'warning': (0, 255, 255),   
-        'accident': (0, 0, 255),    
-        'vehicle': (255, 0, 0)      
+        'normal': (0, 255, 0),
+        'warning': (0, 255, 255),
+        'accident': (0, 0, 255),
+        'vehicle': (255, 0, 0)
     }
-    
-    FRAME_SKIP = 2  
+
+    FRAME_SKIP = 2
     RESIZE_WIDTH = 640
 
 config = AdvancedAccidentConfig()
@@ -212,61 +224,59 @@ def create_advanced_visualization(frame, detections, accident_flags):
 
 def process_accident_video(video_path, output_path="output_analysis.mp4", max_frames=3000, show_window=True):
     """Advanced video processing pipeline."""
-    import torch as _torch
-    if _torch.cuda.is_available():
-        _torch.cuda.init()  # ensure CUDA context in this thread
 
     print(f"\n[INFO] Starting video pipeline: {os.path.basename(video_path)}")
     print(f"[INFO] Inference device: {config.YOLO_DEVICE}")
+    
     model = YOLO(config.YOLO_MODEL)
-    model.to(config.YOLO_DEVICE)
-    # Do NOT call model.model.half() directly — let half=True in predict handle FP16
+    if not openvinoGPU and torch.cuda.is_available():
+        model.to(config.YOLO_DEVICE)
     
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"[ERROR] Could not open video: {video_path}")
         return None
-        
+
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
+
     # Use avc1 for HTML5 <video> browser compatibility instead of mp4v
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     advanced_tracker = AdvancedVehicleTracker()
-    
+
     results = {'frames_processed': 0, 'vehicles_detected': 0, 'accident_alerts': []}
     frame_count = 0
     start_time = time.time()
-    
+
     print("[INFO] Processing stream... (Press 'q' to stop early).")
     while cap.isOpened() and frame_count < max_frames:
         ret, frame = cap.read()
         if not ret:
             break
-            
+
         if frame_count % config.FRAME_SKIP != 0:
             frame_count += 1
             continue
-            
+
         if width > config.RESIZE_WIDTH:
             scale_factor = config.RESIZE_WIDTH / width
             new_width = config.RESIZE_WIDTH
             new_height = int(height * scale_factor)
             frame = cv2.resize(frame, (new_width, new_height))
-            
+
         yolo_results = model(
             frame,
             conf=config.CONFIDENCE_THRESHOLD,
             iou=config.IOU_THRESHOLD,
             imgsz=640,
-            device=config.YOLO_DEVICE,
-            half=config.YOLO_DEVICE.startswith('cuda'),
-            verbose=False,
+            device=config.YOLO_DEVICE if not openvinoGPU else None,
+            half=not openvinoGPU and config.YOLO_DEVICE.startswith('cuda'),
+            verbose=False
         )
         detections = []
-        
+
         if len(yolo_results[0].boxes) > 0:
             boxes = yolo_results[0].boxes.data.cpu().numpy()
             for box in boxes:
@@ -279,37 +289,35 @@ def process_accident_video(video_path, output_path="output_analysis.mp4", max_fr
                         'confidence': conf, 'type': 'vehicle', 'class_id': int(cls_id)
                     }
                     detections.append(detection)
-                    
+
         _, accident_flags = advanced_tracker.update_tracks(detections, frame)
         vis_frame = create_advanced_visualization(frame, detections, accident_flags)
         out.write(vis_frame)
-        
+
         # Real-time visualization
         if show_window:
             cv2.imshow("Accident Detector - OpenVINO GPU", vis_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-            
+
         results['frames_processed'] += 1
         results['vehicles_detected'] += len(detections)
-        
+
         if accident_flags:
             results['accident_alerts'].append({'frame': frame_count, 'vehicle_count': len(detections), 'flags': accident_flags})
-            
         frame_count += 1
         if frame_count % 30 == 0:
             elapsed = time.time() - start_time
             current_fps = results['frames_processed'] / elapsed
             print(f" > Frame {frame_count} | Speed: {current_fps:.1f} FPS | Detected: {len(detections)} vehicles | Alerts: {len(accident_flags)}")
-
     cap.release()
     out.release()
     if show_window:
         cv2.destroyAllWindows()
-    
+
     total_time = time.time() - start_time
     final_fps = results['frames_processed'] / total_time
-    
+
     print("\n" + "="*40)
     print(f" [DONE] Processed {results['frames_processed']} valid frames at {final_fps:.1f} FPS")
     print(f"        Output saved to: {output_path}")
@@ -318,6 +326,6 @@ def process_accident_video(video_path, output_path="output_analysis.mp4", max_fr
     return results
 
 if __name__ == "__main__":
-    video_to_process = r"C:\MyStuff\VS\merge-conflict\backend\test_vid\test1.mp4"
+    video_to_process = r"C:\MyStuff\VS\merge-conflict1\backend\test_vid\test1.mp4"
     output_video_path = "processed_accident_video.mp4"
     process_accident_video(video_to_process, output_video_path)

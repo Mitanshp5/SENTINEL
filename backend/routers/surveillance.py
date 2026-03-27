@@ -11,7 +11,7 @@ import cv2
 import time
 import torch
 
-from main_gpu import process_accident_video, YOLO, config, AdvancedVehicleTracker, create_advanced_visualization
+from main_gpu import process_accident_video, YOLO, config, AdvancedVehicleTracker, create_advanced_visualization, get_yolo_model
 import db
 
 logger = logging.getLogger(__name__)
@@ -22,18 +22,14 @@ router = APIRouter()
 # request reuses the same GPU-resident weights instead of cold-loading.
 # -----------------------------------------------------------------------
 def _load_yolo_singleton() -> YOLO:
-    if torch.cuda.is_available():
-        torch.cuda.set_device(0)
-    m = YOLO(config.YOLO_MODEL)
-    m.to(config.YOLO_DEVICE)
+    m = get_yolo_model()
     # Warm up: one silent dummy inference so first real frame is instant
     import numpy as np
-    _dummy = np.zeros((640, 640, 3), dtype='uint8')
+    _dummy = np.zeros((config.IMG_SIZE, config.IMG_SIZE, 3), dtype='uint8')
     m(_dummy, device=config.YOLO_DEVICE,
-      half=config.YOLO_DEVICE.startswith('cuda'),
-      imgsz=640, verbose=False)
-    device_str = next(m.model.parameters()).device
-    logger.info(f"[YOLO] Model ready on {device_str}")
+      imgsz=config.IMG_SIZE, verbose=False)
+    
+    logger.info(f"[YOLO] Model ready on OpenVINO {config.YOLO_DEVICE}")
     return m
 
 _YOLO_INSTANCE: YOLO = _load_yolo_singleton()
@@ -94,10 +90,6 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
     main_loop = asyncio.get_running_loop()
     
     def frame_generator():
-        # Ensure CUDA context exists in this thread (contexts are thread-local)
-        if torch.cuda.is_available():
-            torch.cuda.set_device(0)
-
         # Reuse the module-level singleton — weights already on GPU
         model = _YOLO_INSTANCE
 
@@ -132,14 +124,13 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
                     new_height = int(height * scale_factor)
                     frame = cv2.resize(frame, (new_width, new_height))
 
-                # YOLO inference on GPU (half=True → FP16, ~2x throughput on RTX)
+                # YOLO inference on OpenVINO GPU
                 yolo_results = model(
                     frame,
                     conf=config.CONFIDENCE_THRESHOLD,
                     iou=config.IOU_THRESHOLD,
-                    imgsz=640,
+                    imgsz=config.IMG_SIZE,
                     device=config.YOLO_DEVICE,
-                    half=config.YOLO_DEVICE.startswith('cuda'),
                     verbose=False,
                 )
                 detections = []
