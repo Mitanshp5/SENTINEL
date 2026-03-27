@@ -10,6 +10,12 @@ import torch
 
 warnings.filterwarnings('ignore')
 
+# Force PyTorch to use the RTX 4050 exclusively and enable cuDNN auto-tuner
+# (benchmark=True caches the fastest kernel for fixed 640×640 inputs)
+os.environ.setdefault('CUDA_VISIBLE_DEVICES', '0')
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.deterministic = False
+
 # =====================================================================
 # GPU TOGGLE: Set to True for Intel/OpenVINO GPU, False for NVIDIA CUDA
 # =====================================================================
@@ -83,9 +89,9 @@ class AdvancedAccidentConfig:
         'accident': (0, 0, 255),
         'vehicle': (255, 0, 0)
     }
-
-    FRAME_SKIP = 2
+    FRAME_SKIP = 4   # process every 4th frame → ~7.5 frames/s at 30fps source, max GPU throughput
     RESIZE_WIDTH = 640
+    IMG_SIZE = 640
 
 config = AdvancedAccidentConfig()
 
@@ -326,6 +332,6 @@ def process_accident_video(video_path, output_path="output_analysis.mp4", max_fr
     return results
 
 if __name__ == "__main__":
-    video_to_process = r"C:\MyStuff\VS\merge-conflict1\backend\test_vid\test1.mp4"
+    video_to_process = r"backend\test_vid\test1.mp4"
     output_video_path = "processed_accident_video.mp4"
     process_accident_video(video_to_process, output_video_path)

@@ -2,6 +2,37 @@ import { useEffect, useRef } from 'react';
 import { useFeedStore, useIncidentStore } from '../store';
 import { api } from '../services/api';
 
+const normalizeCityCode = (value: unknown): 'nyc' | 'chandigarh' | null => {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === 'nyc' || raw === 'new york' || raw === 'new york city' || raw === 'new_york' || raw === 'new-york') {
+    return 'nyc';
+  }
+  if (raw === 'chandigarh' || raw === 'chd' || raw === 'tri-city' || raw === 'tricity') {
+    return 'chandigarh';
+  }
+  return null;
+};
+
+const inferCityFromCoordinates = (lat: unknown, lng: unknown): 'nyc' | 'chandigarh' | null => {
+  const latN = Number(lat);
+  const lngN = Number(lng);
+  if (!Number.isFinite(latN) || !Number.isFinite(lngN)) return null;
+  if (latN >= 40.4 && latN <= 41.1 && lngN >= -74.35 && lngN <= -73.55) return 'nyc';
+  if (latN >= 30.55 && latN <= 30.9 && lngN >= 76.65 && lngN <= 76.95) return 'chandigarh';
+  return null;
+};
+
+const inferIncidentCity = (payload: any): 'nyc' | 'chandigarh' | null => {
+  const explicit = normalizeCityCode(payload?.city || payload?.data?.city);
+  const coord = inferCityFromCoordinates(
+    payload?.location?.coordinates?.[1] ?? payload?.data?.location?.coordinates?.[1],
+    payload?.location?.coordinates?.[0] ?? payload?.data?.location?.coordinates?.[0],
+  );
+  if (coord && explicit && coord !== explicit) return coord;
+  return explicit ?? coord ?? null;
+};
+
 export const useWebSocket = () => {
   const city = useFeedStore((s) => s.city);
   const { setSegments } = useFeedStore();
@@ -31,12 +62,12 @@ export const useWebSocket = () => {
               setSegments(msg.data.segments);
               break;
             case 'incident_detected': {
-              const incidentCity = msg.data.city || msg.data.data?.city;
+              const incidentCity = inferIncidentCity(msg.data);
               if (incidentCity && incidentCity !== currentCity) break;
               setCollisions([]);
               setIncident({
                 id: msg.data._id || msg.data.id || 'unknown',
-                city: msg.data.city,
+                city: incidentCity || currentCity,
                 status: msg.data.status,
                 severity: msg.data.severity,
                 location: {
@@ -57,13 +88,16 @@ export const useWebSocket = () => {
               break;
             }
             case 'incident_assigned': {
-              const assignCity = msg.data.city || msg.data.data?.city;
+              const assignCity = normalizeCityCode(msg.data.city || msg.data.data?.city);
               if (assignCity && assignCity !== currentCity) break;
               updateIncidentAssignment(msg.data.incident_id, msg.data.operator);
               break;
             }
             case 'llm_output': {
-              const llmCity = msg.data.city || msg.data.data?.city;
+              const llmCity =
+                normalizeCityCode(msg.data.city || msg.data.data?.city) ||
+                useIncidentStore.getState().incidents.find((i) => i.id === msg.data.incident_id)?.city ||
+                null;
               if (llmCity && llmCity !== currentCity) break;
               setLLMOutput(msg.data);
               // Only update diversion routes if new data is non-empty
@@ -80,7 +114,7 @@ export const useWebSocket = () => {
               setCollisions(msg.data.collisions || []);
               break;
             case 'congestion_alert': {
-              const congestionCity = msg.data.city || msg.data.data?.city;
+              const congestionCity = normalizeCityCode(msg.data.city || msg.data.data?.city);
               if (congestionCity && congestionCity !== currentCity) break;
               console.log('[WS] Congestion alert:', msg.data.primary_street);
               setCongestionZone(msg.data);
@@ -99,7 +133,10 @@ export const useWebSocket = () => {
               clearCongestionZone(msg.data.zone_id);
               break;
             case 'incident_routes': {
-              const routeCity = msg.data.city || msg.data.data?.city;
+              const routeCity =
+                normalizeCityCode(msg.data.city || msg.data.data?.city) ||
+                useIncidentStore.getState().incidents.find((i) => i.id === msg.data.incident_id)?.city ||
+                null;
               if (routeCity && routeCity !== currentCity) break;
               const routeIncidentId = msg.data.incident_id || 'unknown';
               console.log('[WS] Incident routes received for', routeIncidentId, '- blocked:',
@@ -122,7 +159,10 @@ export const useWebSocket = () => {
               break;
             }
             case 'incident_resolved': {
-              const resolvedCity = msg.data.city || msg.data.data?.city;
+              const resolvedCity =
+                normalizeCityCode(msg.data.city || msg.data.data?.city) ||
+                useIncidentStore.getState().incidents.find((i) => i.id === (msg.data.incident_id || msg.data._id || ''))?.city ||
+                null;
               if (resolvedCity && resolvedCity !== currentCity) break;
               const resolvedId = msg.data.incident_id || msg.data._id || 'unknown';
               console.log('[WS] Incident resolved:', resolvedId);
@@ -130,7 +170,10 @@ export const useWebSocket = () => {
               break;
             }
             case 'police_dispatched': {
-              const eventCity = msg.data.city || msg.data.data?.city;
+              const eventCity =
+                normalizeCityCode(msg.data.city || msg.data.data?.city) ||
+                useIncidentStore.getState().incidents.find((i) => i.id === msg.data.incident_id)?.city ||
+                null;
               if (eventCity && eventCity !== currentCity) break;
               updateIncidentPoliceDispatch(msg.data.incident_id, {
                 police_dispatched: true,

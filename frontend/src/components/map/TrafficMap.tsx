@@ -50,8 +50,9 @@ const MapController: React.FC<{
   const lastFocusedIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!center) return;
+    if (focusIncident?.id) return;
     map.flyTo([center.lat, center.lng], center.zoom || DEFAULT_ZOOM, { duration: 1.2 });
-  }, [center, map]);
+  }, [center, focusIncident?.id, map]);
 
   useEffect(() => {
     if (!focusIncident?.id) return;
@@ -67,6 +68,7 @@ const TrafficMap: React.FC = () => {
   const { cityCenter, city } = useFeedStore();
   const { incidents, currentIncident, setCollisions, setIncident, setLLMOutput, incidentRoutes, congestionZones } = useIncidentStore();
   const [selectedCamera, setSelectedCamera] = useState<(typeof CAMERA_POINTS)[number] | null>(null);
+  const focusedIncident = currentIncident && currentIncident.city === city ? currentIncident : null;
 
   useEffect(() => {
     if (!currentIncident) return;
@@ -94,6 +96,15 @@ const TrafficMap: React.FC = () => {
     });
   }, [incidentRoutes, activeIncidents]);
 
+  const cityCongestionZones = useMemo(
+    () =>
+      congestionZones.filter((z: any) => {
+        const zCity = (z.city || z._city || '').toLowerCase();
+        return zCity === city;
+      }),
+    [congestionZones, city],
+  );
+
   const center: LatLng = cityCenter
     ? [cityCenter.lat, cityCenter.lng]
     : NYC_CENTER;
@@ -106,24 +117,23 @@ const TrafficMap: React.FC = () => {
         className="w-full h-full"
         zoomControl
       >
-        <MapController center={cityCenter} focusIncident={currentIncident} />
+        <MapController center={cityCenter} focusIncident={focusedIncident} />
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {congestionZones
-          .filter((z: any) => z.city === city)
+        {cityCongestionZones
           .flatMap((z: any) => z.segment_geometries || [])
           .filter((seg: any) => Array.isArray(seg.geometry) && seg.geometry.length >= 2)
           .map((seg: any, i: number) => (
             <Polyline
-              key={`congestion-${i}`}
+              key={`congestion-seg-${seg.segment_id || i}`}
               positions={toLatLng(seg.geometry)}
               pathOptions={{
                 color: '#f59e0b',
-                weight: 10,
-                opacity: 0.65,
+                weight: 8,
+                opacity: 0.68,
               }}
             />
           ))}
@@ -131,7 +141,7 @@ const TrafficMap: React.FC = () => {
         {activeIncidents.map((inc) => {
           const radius = SEVERITY_RADIUS_M[inc.severity] || 330;
           const centerPt: LatLng = [inc.location.lat, inc.location.lng];
-          const isFocused = currentIncident?.id === inc.id;
+          const isFocused = focusedIncident?.id === inc.id;
           return (
             <React.Fragment key={`inc-${inc.id}`}>
               <Circle center={centerPt} radius={radius} pathOptions={{ color: '#fbbf24', fillColor: '#fbbf24', fillOpacity: 0.12, weight: 0 }} />
@@ -176,18 +186,26 @@ const TrafficMap: React.FC = () => {
           const alternateMid = mapMidpoint(alternate);
           const blockedLabel = rp.blocked?.label || 'BLOCKED ROAD';
           const routeMeta = rp.meta || {};
+          const routeQuality = String(routeMeta?.route_quality || '').toLowerCase();
           const safeLabel = rp.alternate?.label || 'SAFE ROUTE';
           const modeledEta = Number(rp.alternate?.estimated_minutes || 0);
           const actualEta = Number(rp.alternate?.estimated_actual_minutes || modeledEta || 0);
           const etaLabel = actualEta > 0 ? ` · ETA ${actualEta.toFixed(1)}m` : '';
+          const hasAlternate = alternate.length >= 2;
+          const isUnavailable =
+            routeQuality === 'unavailable' ||
+            (!hasAlternate && !routeMeta?.using_last_known_safe_route);
+          const isRetained = routeQuality === 'retained' || Boolean(routeMeta?.using_last_known_safe_route);
           const isFallbackEstimate =
             Boolean(routeMeta?.fallback_used) ||
             routeMeta?.routing_engine === 'degraded' ||
-            Boolean(routeMeta?.using_last_known_safe_route) ||
+            isRetained ||
             String(safeLabel).toUpperCase().includes('LOCAL ESTIMATE');
-          const safeLabelWhenHidden = routeMeta?.using_last_known_safe_route
-            ? `${safeLabel}${etaLabel} (RETAINED)`
-            : `${safeLabel}${etaLabel} (RECALCULATING)`;
+          const safeLabelWhenHidden = isUnavailable
+            ? 'SAFE ROUTE UNAVAILABLE (RECALCULATING)'
+            : (isRetained
+              ? `${safeLabel}${etaLabel} (RETAINED)`
+              : `${safeLabel}${etaLabel} (RECALCULATING)`);
           const alternateStyle = isFallbackEstimate
             ? { color: '#16a34a', weight: 6, opacity: 0.78, dashArray: '8 6' }
             : { color: '#16a34a', weight: 7, opacity: 0.96 };
@@ -196,7 +214,7 @@ const TrafficMap: React.FC = () => {
           const safeAnchor = alternateMid || blockedMid || start || end;
           return (
             <React.Fragment key={`route-${rp.incidentId || i}`}>
-              {alternate.length >= 2 && (
+              {hasAlternate && (
                 <Polyline positions={alternate} pathOptions={alternateStyle} />
               )}
               {blocked.length >= 2 && (
@@ -216,7 +234,7 @@ const TrafficMap: React.FC = () => {
                 <CircleMarker center={safeAnchor} radius={1} opacity={0} fillOpacity={0}>
                   <Tooltip direction="center" permanent>
                     <span className="font-mono text-[10px] font-bold">
-                      {alternate.length >= 2 ? `${safeLabel}${etaLabel}` : safeLabelWhenHidden}
+                      {hasAlternate ? `${safeLabel}${etaLabel}` : safeLabelWhenHidden}
                     </span>
                   </Tooltip>
                 </CircleMarker>

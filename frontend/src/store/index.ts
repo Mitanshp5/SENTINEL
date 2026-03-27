@@ -22,6 +22,16 @@ const persistCity = (city: 'nyc' | 'chandigarh') => {
   } catch (e) {}
 };
 
+const pickLatestIncidentForCity = (
+  incidents: Incident[],
+  city: 'nyc' | 'chandigarh',
+): Incident | null => {
+  const scoped = incidents
+    .filter((inc) => inc.city === city && inc.status !== 'resolved')
+    .sort((a, b) => new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime());
+  return scoped[0] ?? null;
+};
+
 const normalizeCityCode = (value: unknown): 'nyc' | 'chandigarh' | null => {
   const raw = String(value || '').trim().toLowerCase();
   if (!raw) return null;
@@ -256,10 +266,11 @@ export const useIncidentStore = create<IncidentState>((set) => ({
   clearIncident: () => set((state) => {
     const currentId = state.currentIncident?.id;
     if (!currentId) return {};
+    const city = useFeedStore.getState().city;
     const remainingIncidents = state.incidents.filter((i) => i.id !== currentId);
     const remainingRoutes = state.incidentRoutes.filter((r) => r.incidentId !== currentId);
     return {
-      currentIncident: remainingIncidents.length > 0 ? remainingIncidents[remainingIncidents.length - 1] : null,
+      currentIncident: pickLatestIncidentForCity(remainingIncidents, city),
       llmOutput: null,
       incidents: remainingIncidents,
       incidentRoutes: remainingRoutes,
@@ -307,6 +318,11 @@ export const useIncidentStore = create<IncidentState>((set) => ({
       );
       if (usingLastKnown) {
         (mergedMeta as any).using_last_known_safe_route = true;
+        (mergedMeta as any).route_quality = 'retained';
+        (mergedMeta as any).alternate_source = 'retained';
+        if (!(mergedMeta as any).degradation_reason) {
+          (mergedMeta as any).degradation_reason = 'using_last_known_safe_route';
+        }
       }
 
       return {
@@ -326,6 +342,7 @@ export const useIncidentStore = create<IncidentState>((set) => ({
     }),
   resolveIncident: (incidentId) =>
     set((state) => {
+      const city = useFeedStore.getState().city;
       const wasCurrentIncident = state.currentIncident?.id === incidentId;
       const remainingIncidents = state.incidents.filter((i) => i.id !== incidentId);
       const remainingRoutes = state.incidentRoutes.filter((r) => r.incidentId !== incidentId);
@@ -333,13 +350,14 @@ export const useIncidentStore = create<IncidentState>((set) => ({
         incidents: remainingIncidents,
         incidentRoutes: remainingRoutes,
         currentIncident: wasCurrentIncident
-          ? (remainingIncidents.length > 0 ? remainingIncidents[remainingIncidents.length - 1] : null)
+          ? pickLatestIncidentForCity(remainingIncidents, city)
           : state.currentIncident,
         llmOutput: wasCurrentIncident ? null : state.llmOutput,
       };
     }),
   dismissIncident: (incidentId) =>
     set((state) => {
+      const city = useFeedStore.getState().city;
       const wasCurrentIncident = state.currentIncident?.id === incidentId;
       const remainingIncidents = state.incidents.filter((i) => i.id !== incidentId);
       const remainingRoutes = state.incidentRoutes.filter((r) => r.incidentId !== incidentId);
@@ -347,7 +365,7 @@ export const useIncidentStore = create<IncidentState>((set) => ({
         incidents: remainingIncidents,
         incidentRoutes: remainingRoutes,
         currentIncident: wasCurrentIncident
-          ? (remainingIncidents.length > 0 ? remainingIncidents[remainingIncidents.length - 1] : null)
+          ? pickLatestIncidentForCity(remainingIncidents, city)
           : state.currentIncident,
         llmOutput: wasCurrentIncident ? null : state.llmOutput,
       };

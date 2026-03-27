@@ -3,6 +3,7 @@ import Map, { Source, Layer, Marker, useMap } from 'react-map-gl/mapbox';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { useFeedStore, useIncidentStore } from '../../store';
 import { api } from '../../services/api';
+import { inferIncidentCity } from '../../utils/city';
 
 const FALLBACK_CENTER: [number, number] = [76.7794, 30.7333]; // [lng, lat] for Chandigarh
 const DEFAULT_ZOOM = 15;
@@ -44,14 +45,14 @@ const MapController: React.FC = () => {
 
 const TrafficMap: React.FC = () => {
   const { city, cityCenter } = useFeedStore();
-  const { incidents } = useIncidentStore();
+  const { incidents, congestionZones } = useIncidentStore();
   const [safeRoutes, setSafeRoutes] = useState<SafeRoute[]>([]);
   const [blockedRoutes, setBlockedRoutes] = useState<BlockedRoute[]>([]);
 
   const activeCityIncidents = useMemo(
     () =>
       incidents.filter((inc: any) => {
-        const incCity = (inc.city || '').toLowerCase();
+        const incCity = inferIncidentCity(inc);
         const status = (inc.status || 'active').toLowerCase();
         return incCity === city && status === 'active';
       }),
@@ -132,7 +133,7 @@ const TrafficMap: React.FC = () => {
     };
 
     loadRoutes();
-    const timer = setInterval(loadRoutes, 8000);
+    const timer = setInterval(loadRoutes, 3500);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -163,6 +164,33 @@ const TrafficMap: React.FC = () => {
     [blockedRoutes],
   );
 
+  const cityCongestionZones = useMemo(
+    () =>
+      congestionZones.filter((zone: any) => {
+        const zoneCity = String(zone?.city || '').toLowerCase();
+        return zoneCity === city;
+      }),
+    [congestionZones, city],
+  );
+
+  const congestionSegmentGeoJSON = useMemo(
+    () => ({
+      type: 'FeatureCollection' as const,
+      features: cityCongestionZones
+        .flatMap((zone: any) => zone?.segment_geometries || [])
+        .filter((seg: any) => Array.isArray(seg?.geometry) && seg.geometry.length >= 2)
+        .map((seg: any, idx: number) => ({
+          type: 'Feature' as const,
+          properties: { idx, segment_id: seg.segment_id || idx },
+          geometry: {
+            type: 'LineString' as const,
+            coordinates: seg.geometry,
+          },
+        })),
+    }),
+    [cityCongestionZones],
+  );
+
   return (
     <div className="w-full h-full relative">
       <Map
@@ -176,6 +204,19 @@ const TrafficMap: React.FC = () => {
         mapStyle="mapbox://styles/mapbox/light-v11"
       >
         <MapController />
+
+        <Source id="congestion-segments" type="geojson" data={congestionSegmentGeoJSON}>
+          <Layer
+            id="congestion-segment-lines"
+            type="line"
+            paint={{
+              'line-color': '#f59e0b',
+              'line-width': 8,
+              'line-opacity': 0.68,
+            }}
+            layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+          />
+        </Source>
 
         <Source id="blocked-routes" type="geojson" data={blockedRouteGeoJSON}>
           <Layer

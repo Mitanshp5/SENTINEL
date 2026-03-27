@@ -103,6 +103,9 @@ export const api = {
     return fetch(`${API_BASE}/api/social/alerts?${params}`).then((r) => r.json());
   },
 
+  getCongestionZones: (city: 'nyc' | 'chandigarh', statuses: string = 'active,permanent') =>
+    fetch(`${API_BASE}/api/congestion/zones/visible?city=${city}&statuses=${encodeURIComponent(statuses)}`).then((r) => r.json()),
+
   // WebSocket URL
   getWsUrl: () => {
     if (import.meta.env.VITE_API_URL) {

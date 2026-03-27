@@ -159,6 +159,8 @@ async def _preserve_last_safe_alternate(incident_id: str, routes: dict | None) -
     updated["alternate"] = prev_alt
     meta = dict(updated.get("meta") or {})
     meta["using_last_known_safe_route"] = True
+    meta["route_quality"] = "retained"
+    meta["alternate_source"] = "retained"
     if not meta.get("degradation_reason"):
         meta["degradation_reason"] = "using_last_known_safe_route"
     updated["meta"] = meta
@@ -285,6 +287,8 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"Failed to save feed snapshot: {e}")
 
     recompute_locks: dict[str, asyncio.Lock] = {}
+    recompute_pending: dict[str, dict[str, str | None]] = {}
+    recompute_sweep_tasks: dict[str, asyncio.Task] = {}
     severity_radius_deg = {
         "critical": 0.006,   # ~660m radius
         "major": 0.004,      # ~440m radius
@@ -318,13 +322,62 @@ async def lifespan(app: FastAPI):
             return False
         return _haversine_m(center[0], center[1], lng, lat) <= max_m
 
-    async def _recompute_active_routes(city: str, reason: str, skip_incident_id: str | None = None):
+    def _select_local_avoid_polygons(
+        polygons: list[list[list[float]]],
+        lng: float,
+        lat: float,
+        max_m: float,
+        limit: int,
+    ) -> list[list[list[float]]]:
+        ranked: list[tuple[float, list[list[float]]]] = []
+        for poly in polygons:
+            if not poly or len(poly) < 4:
+                continue
+            closed = poly if poly[0] == poly[-1] else poly + [poly[0]]
+            center = _polygon_center(closed)
+            if not center:
+                continue
+            d = _haversine_m(center[0], center[1], float(lng), float(lat))
+            if d <= max_m:
+                ranked.append((d, closed))
+        ranked.sort(key=lambda x: x[0])
+        return [poly for _, poly in ranked[: max(1, limit)]]
+
+    def _schedule_city_sweep(city: str, delay_sec: float = 6.0):
+        existing = recompute_sweep_tasks.get(city)
+        if existing and not existing.done():
+            return
+
+        async def _runner():
+            try:
+                await asyncio.sleep(delay_sec)
+                await _recompute_active_routes(
+                    city=city,
+                    reason="city_consistency_sweep",
+                    recompute_mode="city_sweep",
+                )
+            except Exception as e:
+                logger.warning(f"City sweep recompute failed for city={city}: {e}")
+            finally:
+                recompute_sweep_tasks.pop(city, None)
+
+        recompute_sweep_tasks[city] = asyncio.create_task(_runner())
+
+    async def _recompute_active_routes(
+        city: str,
+        reason: str,
+        skip_incident_id: str | None = None,
+        recompute_mode: str = "affected_immediate",
+    ):
         """Recompute routes for active incidents when incidents/congestion state changes."""
         if db.incidents is None:
             return
         lock = recompute_locks.setdefault(city, asyncio.Lock())
         if lock.locked():
-            logger.info(f"Skipping route recompute ({reason}) for city={city}: previous run still active")
+            recompute_pending[city] = {"reason": reason, "mode": recompute_mode}
+            logger.info(
+                f"Coalescing route recompute ({reason}) for city={city}: previous run still active"
+            )
             return
 
         async with lock:
@@ -333,6 +386,7 @@ async def lifespan(app: FastAPI):
                     {"status": "active", "city": city}
                 ).to_list(50)
                 if not all_active:
+                    recompute_pending.pop(city, None)
                     return
 
                 current_segments = feed_simulator.get_current_segments()
@@ -350,40 +404,60 @@ async def lifespan(app: FastAPI):
                     except Exception:
                         pass
 
-                updated = 0
-                for inc in all_active:
+                incident_boxes: list[tuple[str, list[list[float]]]] = []
+                for other in all_active:
+                    other_id = str(other.get("_id", ""))
+                    oloc = other.get("location", {}).get("coordinates", [])
+                    if len(oloc) < 2:
+                        continue
+                    olng, olat = float(oloc[0]), float(oloc[1])
+                    other_severity = str(other.get("severity", "moderate")).lower()
+                    buf = severity_radius_deg.get(other_severity, 0.003)
+                    incident_boxes.append(
+                        (
+                            other_id,
+                            [
+                                [olng - buf, olat - buf],
+                                [olng + buf, olat - buf],
+                                [olng + buf, olat + buf],
+                                [olng - buf, olat + buf],
+                                [olng - buf, olat - buf],
+                            ],
+                        )
+                    )
+
+                sem = asyncio.Semaphore(max(1, int(os.getenv("ROUTE_RECOMPUTE_PARALLEL", "3"))))
+
+                async def _recompute_one(inc: dict) -> bool:
                     inc_id = str(inc["_id"])
                     if skip_incident_id and inc_id == skip_incident_id:
-                        continue
+                        return False
 
                     inc_coords = inc.get("location", {}).get("coordinates", [0, 0])
                     if len(inc_coords) < 2:
-                        continue
+                        return False
                     inc_lng, inc_lat = float(inc_coords[0]), float(inc_coords[1])
 
-                    extra_avoid = [
-                        poly for poly in zone_polygons
-                        if _is_poly_near(poly, inc_lng, inc_lat, max_m=2200.0)
+                    zone_local = _select_local_avoid_polygons(
+                        zone_polygons,
+                        inc_lng,
+                        inc_lat,
+                        max_m=1500.0,
+                        limit=4,
+                    )
+                    other_polys = [
+                        poly for other_id, poly in incident_boxes if other_id != inc_id
                     ]
-                    for other in all_active:
-                        other_id = str(other["_id"])
-                        if other_id == inc_id:
-                            continue
-                        oloc = other.get("location", {}).get("coordinates", [])
-                        if len(oloc) < 2:
-                            continue
-                        olng, olat = float(oloc[0]), float(oloc[1])
-                        other_severity = str(other.get("severity", "moderate")).lower()
-                        buf = severity_radius_deg.get(other_severity, 0.003)
-                        extra_avoid.append([
-                            [olng - buf, olat - buf],
-                            [olng + buf, olat - buf],
-                            [olng + buf, olat + buf],
-                            [olng - buf, olat + buf],
-                            [olng - buf, olat - buf],
-                        ])
+                    other_local = _select_local_avoid_polygons(
+                        other_polys,
+                        inc_lng,
+                        inc_lat,
+                        max_m=1200.0,
+                        limit=3,
+                    )
+                    extra_avoid = zone_local + other_local
 
-                    try:
+                    async with sem:
                         new_routes = await routing_service.compute_incident_route_pair(
                             inc_lng,
                             inc_lat,
@@ -392,52 +466,73 @@ async def lifespan(app: FastAPI):
                             extra_avoid_polygons=extra_avoid if extra_avoid else None,
                             severity=inc.get("severity", "moderate"),
                             feed_segments=current_segments,
+                            recompute_mode=recompute_mode,
                         )
-                        new_routes = await _preserve_last_safe_alternate(inc_id, new_routes)
+                    new_routes = await _preserve_last_safe_alternate(inc_id, new_routes)
 
-                        if not new_routes or not _route_has_geometry(new_routes.get("blocked")):
-                            continue
+                    if not new_routes or not _route_has_geometry(new_routes.get("blocked")):
+                        return False
 
-                        meta = dict(new_routes.get("meta", {}))
-                        meta["recompute_reason"] = reason
-                        new_routes["meta"] = meta
+                    meta = dict(new_routes.get("meta", {}))
+                    meta["recompute_reason"] = reason
+                    meta["recompute_mode"] = recompute_mode
+                    new_routes["meta"] = meta
 
-                        if db.diversion_routes is not None:
-                            await db.diversion_routes.update_one(
-                                {"incident_id": inc_id},
-                                {"$set": {
-                                    "schema_version": "v2",
-                                    "blocked_route": new_routes["blocked"],
-                                    "alternate_route": new_routes["alternate"],
-                                    "blocked": new_routes["blocked"],
-                                    "alternate": new_routes["alternate"],
-                                    "origin": new_routes["origin"],
-                                    "destination": new_routes["destination"],
-                                    "route_meta": meta,
-                                    "recomputed_at": datetime.now(timezone.utc).isoformat(),
-                                }},
-                                upsert=True,
-                            )
-
-                        await ws_manager.broadcast_to_city(city, {
-                            "type": "incident_routes",
-                            "data": {
-                                "version": "v2",
-                                "city": city,
-                                "incident_id": inc_id,
-                                "origin": new_routes["origin"],
-                                "destination": new_routes["destination"],
+                    if db.diversion_routes is not None:
+                        await db.diversion_routes.update_one(
+                            {"incident_id": inc_id},
+                            {"$set": {
+                                "schema_version": "v2",
+                                "blocked_route": new_routes["blocked"],
+                                "alternate_route": new_routes["alternate"],
                                 "blocked": new_routes["blocked"],
                                 "alternate": new_routes["alternate"],
-                                "meta": meta,
-                            },
-                        })
+                                "origin": new_routes["origin"],
+                                "destination": new_routes["destination"],
+                                "route_meta": meta,
+                                "recomputed_at": datetime.now(timezone.utc).isoformat(),
+                            }},
+                            upsert=True,
+                        )
+
+                    await ws_manager.broadcast_to_city(city, {
+                        "type": "incident_routes",
+                        "data": {
+                            "version": "v2",
+                            "city": city,
+                            "incident_id": inc_id,
+                            "origin": new_routes["origin"],
+                            "destination": new_routes["destination"],
+                            "blocked": new_routes["blocked"],
+                            "alternate": new_routes["alternate"],
+                            "meta": meta,
+                        },
+                    })
+                    return True
+
+                tasks = [_recompute_one(inc) for inc in all_active]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                updated = 0
+                for idx, res in enumerate(results):
+                    if isinstance(res, Exception):
+                        failed_id = str(all_active[idx].get("_id", "unknown"))
+                        logger.warning(f"Failed to recompute routes for {failed_id}: {res}")
+                        continue
+                    if res:
                         updated += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to recompute routes for {inc_id}: {e}")
                 logger.info(f"Recomputed {updated} active incident routes in city={city} (reason={reason})")
             except Exception as e:
                 logger.error(f"Route recomputation error: {e}")
+
+        pending = recompute_pending.pop(city, None)
+        if pending:
+            asyncio.create_task(
+                _recompute_active_routes(
+                    city=city,
+                    reason=pending.get("reason") or "coalesced_recompute",
+                    recompute_mode=pending.get("mode") or "affected_immediate",
+                )
+            )
 
     async def _on_incident(incident: dict):
         """Full LLM pipeline triggered when an incident is detected."""
@@ -503,8 +598,9 @@ async def lifespan(app: FastAPI):
 
             t0 = time.time()
 
-            # Collect avoidance zones from ALL other active incidents + congestion zones
-            extra_avoid = []
+            # Collect bounded local avoidance zones from other incidents + congestion zones.
+            incident_avoid_polys: list[list[list[float]]] = []
+            zone_avoid_polys: list[list[list[float]]] = []
             if db.incidents is not None:
                 try:
                     other_incidents = await db.incidents.find(
@@ -519,7 +615,7 @@ async def lifespan(app: FastAPI):
                             olng, olat = oloc[0], oloc[1]
                             other_severity = str(other.get("severity", "moderate")).lower()
                             buf = severity_radius_deg.get(other_severity, 0.003)
-                            extra_avoid.append([
+                            incident_avoid_polys.append([
                                 [olng - buf, olat - buf],
                                 [olng + buf, olat - buf],
                                 [olng + buf, olat + buf],
@@ -537,34 +633,66 @@ async def lifespan(app: FastAPI):
                     for zone in active_zones:
                         poly = zone.get("polygon")
                         if poly and len(poly) >= 4:
-                            closed = poly if poly[0] == poly[-1] else poly + [poly[0]]
-                            if _is_poly_near(closed, float(lng), float(lat), max_m=2400.0):
-                                extra_avoid.append(closed)
+                            zone_avoid_polys.append(poly if poly[0] == poly[-1] else poly + [poly[0]])
                 except Exception as e:
                     logger.warning(f"Failed to query congestion zones for avoidance: {e}")
 
-            current_segments = feed_simulator.get_current_segments()
-            collision_task = collision_service.get_nearby_collisions(lat, lng, city=city)
-            route_task = routing_service.compute_incident_route_pair(
-                lng, lat, city=city,
-                on_street=incident.get("on_street", ""),
-                extra_avoid_polygons=extra_avoid if extra_avoid else None,
-                severity=incident.get("severity", "moderate"),
-                feed_segments=current_segments,
+            extra_avoid = _select_local_avoid_polygons(
+                zone_avoid_polys,
+                float(lng),
+                float(lat),
+                max_m=1500.0,
+                limit=4,
+            ) + _select_local_avoid_polygons(
+                incident_avoid_polys,
+                float(lng),
+                float(lat),
+                max_m=1200.0,
+                limit=3,
             )
 
-            results = await asyncio.gather(collision_task, route_task, return_exceptions=True)
+            current_segments = feed_simulator.get_current_segments()
+            collision_timeout_sec = float(os.getenv("COLLISION_LOOKUP_TIMEOUT_SEC", "2.5"))
+            collision_task = asyncio.create_task(
+                collision_service.get_nearby_collisions(lat, lng, city=city)
+            )
+            route_task = asyncio.create_task(
+                routing_service.compute_incident_route_pair(
+                    lng, lat, city=city,
+                    on_street=incident.get("on_street", ""),
+                    extra_avoid_polygons=extra_avoid if extra_avoid else None,
+                    severity=incident.get("severity", "moderate"),
+                    feed_segments=current_segments,
+                    recompute_mode="affected_immediate",
+                )
+            )
 
-            # Unpack results safely
-            collisions_data = results[0] if not isinstance(results[0], Exception) else []
-            incident_routes = results[1] if not isinstance(results[1], Exception) else None
+            collisions_data = []
+            incident_routes = None
+            try:
+                incident_routes = await route_task
+            except Exception as e:
+                logger.error(f"Route computation failed: {e}")
 
-            if isinstance(results[0], Exception):
-                logger.error(f"Collision lookup failed: {results[0]}")
-            if isinstance(results[1], Exception):
-                logger.error(f"Route computation failed: {results[1]}")
+            try:
+                collisions_data = await asyncio.wait_for(collision_task, timeout=collision_timeout_sec)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Collision lookup timed out after %.1fs; continuing incident pipeline",
+                    collision_timeout_sec,
+                )
+                collision_task.cancel()
+                collisions_data = []
+            except Exception as e:
+                logger.error(f"Collision lookup failed: {e}")
+                collisions_data = []
 
-            logger.info(f"Parallel stage (collisions+routing) took {time.time() - t0:.1f}s")
+            logger.info(
+                "Parallel stage (collisions+routing) took %.1fs (route_ready=%s collisions=%s)",
+                time.time() - t0,
+                bool(incident_routes),
+                len(collisions_data),
+            )
 
             collision_context = collision_service.get_collision_context_for_llm(collisions_data)
             cctv_context = "No recent CCTV visual events."
@@ -606,6 +734,10 @@ async def lifespan(app: FastAPI):
                         "fallback_used": True,
                         "ors_calls": 0,
                         "astar_score": 0.0,
+                        "route_quality": "unavailable",
+                        "blocked_source": "unavailable",
+                        "alternate_source": "unavailable",
+                        "recompute_mode": "affected_immediate",
                     },
                 }
             incident_routes = await _preserve_last_safe_alternate(incident_id, incident_routes)
@@ -695,8 +827,10 @@ async def lifespan(app: FastAPI):
                     city=city,
                     reason=f"incident_zone_created:{incident_id}",
                     skip_incident_id=incident_id,
+                    recompute_mode="affected_immediate",
                 )
             )
+            _schedule_city_sweep(city)
 
             # Keep diversions for LLM context(reuse existing field name for backward compat)
             diversions = [
@@ -806,26 +940,89 @@ async def lifespan(app: FastAPI):
             "data": {"incident_id": incident_id, "resolved_at": incident.get("resolved_at", "")},
         })
         logger.info(f"Incident resolved broadcast: {incident_id}")
-        asyncio.create_task(_recompute_active_routes(city=city, reason=f"incident_resolved:{incident_id}"))
+        asyncio.create_task(
+            _recompute_active_routes(
+                city=city,
+                reason=f"incident_resolved:{incident_id}",
+                recompute_mode="affected_immediate",
+            )
+        )
+        _schedule_city_sweep(city)
 
     async def _on_congestion(zone: dict):
         """Handle congestion zone detection — compute alternate routes and broadcast."""
         city = feed_simulator.active_city
         zone["city"] = city
         try:
+            segments = zone.get("segments", [])
+            segment_geometries = [
+                {
+                    "segment_id": seg.get("link_id", ""),
+                    "name": seg.get("link_name", ""),
+                    "speed": seg.get("speed", 0),
+                    "geometry": _segment_to_line_geometry(
+                        seg.get("lat", 0),
+                        seg.get("lng", 0),
+                        seg.get("link_name", ""),
+                        length_deg=0.001
+                    ),
+                }
+                for seg in segments
+            ]
+            segment_points = [
+                (float(seg.get("lng")), float(seg.get("lat")))
+                for seg in segments
+                if seg.get("lat") is not None and seg.get("lng") is not None
+            ]
+            if segment_points:
+                min_lng = min(p[0] for p in segment_points)
+                max_lng = max(p[0] for p in segment_points)
+                min_lat = min(p[1] for p in segment_points)
+                max_lat = max(p[1] for p in segment_points)
+                pad = 0.0006
+                center = [
+                    sum(p[0] for p in segment_points) / len(segment_points),
+                    sum(p[1] for p in segment_points) / len(segment_points),
+                ]
+                polygon = [
+                    [min_lng - pad, min_lat - pad],
+                    [max_lng + pad, min_lat - pad],
+                    [max_lng + pad, max_lat + pad],
+                    [min_lng - pad, max_lat + pad],
+                    [min_lng - pad, min_lat - pad],
+                ]
+            else:
+                coords = zone.get("location", {}).get("coordinates", [0.0, 0.0])
+                lng = float(coords[0]) if len(coords) > 0 else 0.0
+                lat = float(coords[1]) if len(coords) > 1 else 0.0
+                center = [lng, lat]
+                severity = str(zone.get("severity", "moderate")).lower()
+                r = 0.002 if severity in ("critical", "severe") else 0.0012
+                polygon = [
+                    [lng - r, lat - r],
+                    [lng + r, lat - r],
+                    [lng + r, lat + r],
+                    [lng - r, lat + r],
+                    [lng - r, lat - r],
+                ]
+
             # Save congestion zone to DB
             if db.congestion_zones is not None:
                 try:
                     zone_doc = {
                         "zone_id": zone["zone_id"],
                         "city": city,
+                        "source": "detector",
                         "type": "congestion",
                         "status": "active",
                         "severity": zone["severity"],
                         "location": zone["location"],
+                        "center": center,
+                        "polygon": polygon,
                         "primary_street": zone["primary_street"],
                         "affected_segment_ids": zone.get("affected_segment_ids", []),
-                        "segments": zone.get("segments", []),
+                        "segments": segments,
+                        "segment_geometries": segment_geometries,
                         "detected_at": zone.get("detected_at", datetime.now(timezone.utc).isoformat()),
                     }
                     await db.congestion_zones.insert_one(zone_doc)
@@ -850,21 +1047,6 @@ async def lifespan(app: FastAPI):
             ]
 
             # Broadcast congestion alert with routes
-            # Build segment geometries for road-following overlays
-            segment_geometries = [
-                {
-                    "segment_id": seg.get("link_id", ""),
-                    "name": seg.get("link_name", ""),
-                    "speed": seg.get("speed", 0),
-                    "geometry": _segment_to_line_geometry(
-                        seg.get("lat", 0),
-                        seg.get("lng", 0),
-                        seg.get("link_name", ""),
-                        length_deg=0.001
-                    ),
-                }
-                for seg in zone.get("segments", [])
-            ]
 
             await ws_manager.broadcast_to_city(city, {
                 "type": "congestion_alert",
@@ -875,7 +1057,9 @@ async def lifespan(app: FastAPI):
                     "severity": zone["severity"],
                     "primary_street": zone["primary_street"],
                     "location": zone["location"],
-                    "segments": zone["segments"],
+                    "center": center,
+                    "polygon": polygon,
+                    "segments": segments,
                     "segment_geometries": segment_geometries,
                     "detected_at": zone["detected_at"],
                     "alternate_routes": alt_routes,
@@ -890,8 +1074,10 @@ async def lifespan(app: FastAPI):
                 _recompute_active_routes(
                     city=city,
                     reason=f"congestion_alert:{zone.get('zone_id', 'unknown')}",
+                    recompute_mode="affected_immediate",
                 )
             )
+            _schedule_city_sweep(city)
 
         except Exception as e:
             logger.error(f"Congestion handler error: {e}", exc_info=True)
@@ -920,8 +1106,10 @@ async def lifespan(app: FastAPI):
             _recompute_active_routes(
                 city=feed_simulator.active_city,
                 reason=f"congestion_cleared:{zone.get('zone_id', 'unknown')}",
+                recompute_mode="affected_immediate",
             )
         )
+        _schedule_city_sweep(feed_simulator.active_city)
 
     feed_simulator.on_frame(_on_frame)
     incident_detector.on_incident(_on_incident)

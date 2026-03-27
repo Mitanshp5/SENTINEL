@@ -99,6 +99,13 @@ const Sidebar: React.FC = () => {
     myRoutePair?.alternate?.estimated_actual_extra_minutes || modeledExtraEta || 0
   );
   const socialAlertMessage = myLLMOutput?.alerts?.social_media || myLLMOutput?.alerts?.vms || '';
+  const socialAlertDraft = (
+    socialAlertMessage
+    || myLLMOutput?.alerts?.radio
+    || (activeIncident
+      ? `Traffic advisory: congestion near ${activeIncident.on_street}${activeIncident.cross_street ? ` & ${activeIncident.cross_street}` : ''}. Use designated safe route and expect delays.`
+      : `Traffic advisory for ${city === 'nyc' ? 'New York City' : 'Chandigarh'}: expect congestion in affected corridors and follow official safe-route guidance.`)
+  ).trim();
 
   // Log when selected/active incident changes
   useEffect(() => {
@@ -159,13 +166,13 @@ const Sidebar: React.FC = () => {
   }, [activeIncident?.id]);
 
   const publishSocialAlert = async () => {
-    if (!activeIncident || publishingSocial || !socialAlertMessage) return;
+    if (publishingSocial) return;
     setPublishingSocial(true);
     try {
       const res = await api.publishSocialAlert({
         city,
-        message: socialAlertMessage,
-        incident_id: activeIncident.id,
+        message: socialAlertDraft,
+        incident_id: activeIncident?.id,
         operator,
       });
       setLastSocialPublish(res?.published_at || new Date().toISOString());
@@ -524,49 +531,41 @@ const Sidebar: React.FC = () => {
       <SectionHeader icon={<Share2 />} title="PUBLIC ALERTS" isExpanded={expanded.alerts} onToggle={() => toggle('alerts')} />
       {expanded.alerts && (
         <div className="p-4 border-b border-scada-border space-y-4 bg-scada-panel/30">
-          {myLLMOutput?.alerts && (myLLMOutput.alerts.vms || myLLMOutput.alerts.radio || myLLMOutput.alerts.social_media) ? (
-            <>
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] font-mono text-scada-text-dim">SOCIAL ALERT</span>
-                  <button
-                    onClick={publishSocialAlert}
-                    disabled={!activeIncident || publishingSocial || !socialAlertMessage}
-                    className={`p-0.5 border ${
-                      !activeIncident || !socialAlertMessage
-                        ? 'border-scada-border text-scada-text-dim cursor-not-allowed'
-                        : publishingSocial
-                        ? 'border-scada-blue/40 text-scada-blue/50 cursor-wait'
-                        : 'border-scada-blue text-scada-blue hover:bg-scada-blue hover:text-scada-bg'
-                    }`}
-                    title={publishingSocial ? 'Publishing...' : 'Publish social alert'}
-                  >
-                    <CheckCircle className="h-3 w-3" />
-                  </button>
-                </div>
-                <pre className="text-[10px] font-mono bg-scada-bg p-2 border border-scada-border/50 text-scada-text whitespace-pre-wrap">
-                  {socialAlertMessage || 'No social alert available'}
-                </pre>
-                {lastSocialPublish && (
-                  <p className="text-[9px] font-mono text-scada-green mt-1">
-                    Published at {formatTime(lastSocialPublish)} to all users in {city.toUpperCase()}
-                  </p>
-                )}
-              </div>
-              
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] font-mono text-scada-text-dim">RADIO BROADCAST</span>
-                  <CheckCircle className="h-3 w-3 text-scada-text-dim cursor-pointer hover:text-scada-text" />
-                </div>
-                <p className="text-[10px] font-mono bg-scada-bg p-2 border border-scada-border/50 text-scada-text leading-relaxed">
-                  {myLLMOutput.alerts.radio || 'No radio broadcast drafted'}
-                </p>
-              </div>
-            </>
-          ) : (
-            <p className="text-[10px] font-mono text-scada-text-dim italic">No alerts generated</p>
-          )}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-mono text-scada-text-dim">SOCIAL ALERT</span>
+              <button
+                onClick={publishSocialAlert}
+                disabled={publishingSocial}
+                className={`p-0.5 border ${
+                  publishingSocial
+                    ? 'border-scada-blue/40 text-scada-blue/50 cursor-wait'
+                    : 'border-scada-blue text-scada-blue hover:bg-scada-blue hover:text-scada-bg'
+                }`}
+                title={publishingSocial ? 'Publishing...' : 'Publish social alert to all city users'}
+              >
+                <CheckCircle className="h-3 w-3" />
+              </button>
+            </div>
+            <pre className="text-[10px] font-mono bg-scada-bg p-2 border border-scada-border/50 text-scada-text whitespace-pre-wrap">
+              {socialAlertDraft || 'No social alert available'}
+            </pre>
+            {lastSocialPublish && (
+              <p className="text-[9px] font-mono text-scada-green mt-1">
+                Published at {formatTime(lastSocialPublish)} to all users in {city.toUpperCase()}
+              </p>
+            )}
+          </div>
+          
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-mono text-scada-text-dim">RADIO BROADCAST</span>
+              <CheckCircle className="h-3 w-3 text-scada-text-dim cursor-pointer hover:text-scada-text" />
+            </div>
+            <p className="text-[10px] font-mono bg-scada-bg p-2 border border-scada-border/50 text-scada-text leading-relaxed">
+              {myLLMOutput?.alerts?.radio || 'No radio broadcast drafted'}
+            </p>
+          </div>
         </div>
       )}
 
