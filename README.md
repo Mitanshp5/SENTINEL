@@ -150,9 +150,9 @@ For ease of use, you can use the provided batch files to start all services simu
 
 This project was developed by:
 - **Pranshul Soni** (Backend Architect & API Lead)
-- **Mitansh** (Frontend Developer & UI Lead)
-- **Team Member 3** (CCTV & AI Pipeline)
-- **Team Member 4** (Chatbot & Data Preparation)
+- **Dweep Desai** (Frontend Developer & UI Lead)
+- **Mitansh Prajapati** (AI and CV Expert)
+- **Muskan Sharma** (Chatbot & Data Preparation)
 
 ---
 
