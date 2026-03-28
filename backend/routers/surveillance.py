@@ -7,11 +7,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form, Depends
 from fastapi.responses import StreamingResponse
 import uuid
-import cv2
-import time
-import torch
 
-from main_gpu import process_accident_video, YOLO, config, AdvancedVehicleTracker, create_advanced_visualization
 import db
 from core.auth import require_api_key
 
@@ -19,32 +15,45 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # -----------------------------------------------------------------------
-# Module-level YOLO singleton — loaded once when FastAPI starts so every
-# request reuses the same GPU-resident weights instead of cold-loading.
+# YOLO is only loaded when SKIP_YOLO_LOAD is not set to "true".
+# On Render (cloud), set SKIP_YOLO_LOAD=true to avoid importing heavy
+# ML dependencies (torch, ultralytics, cv2) that are not in requirements.txt.
 # -----------------------------------------------------------------------
-def _load_yolo_singleton() -> YOLO:
-    if torch.cuda.is_available():
-        torch.cuda.set_device(0)
-    m = YOLO(config.YOLO_MODEL, task='detect')
-    # Only call .to() for CUDA — OpenVINO device placement is handled
-    # by the patched ov.Core.compile_model in main_gpu.py.
-    if config.YOLO_DEVICE.startswith('cuda'):
-        m.to(config.YOLO_DEVICE)
+_SKIP_YOLO = os.getenv("SKIP_YOLO_LOAD", "false").lower() == "true"
 
-    # Warm up: two silent dummy inferences.
-    # For OpenVINO, do NOT pass device= — the compile_model patch routes to GPU.
-    # For CUDA, pass the device string.
-    import numpy as np
-    _dummy = np.zeros((640, 640, 3), dtype='uint8')
-    _is_cuda = config.YOLO_DEVICE.startswith('cuda')
-    _warmup_device = config.YOLO_DEVICE if _is_cuda else None
-    for _ in range(2):
-        m(_dummy, device=_warmup_device, half=_is_cuda, imgsz=640, verbose=False)
+# Lazily-resolved references — populated only when YOLO is loaded.
+_gpu_config = None
+_AdvancedVehicleTracker = None
+_create_advanced_visualization = None
 
-    logger.info(f"[YOLO] Model ready on {config.YOLO_DEVICE} (FP16={_is_cuda})")
-    return m
+_YOLO_INSTANCE = None
 
-_YOLO_INSTANCE: YOLO = _load_yolo_singleton()
+if not _SKIP_YOLO:
+    try:
+        import cv2  # noqa: F401 — only needed for YOLO path
+        import torch
+        from main_gpu import YOLO, config as _gpu_config, AdvancedVehicleTracker as _AdvancedVehicleTracker, create_advanced_visualization as _create_advanced_visualization
+
+        def _load_yolo_singleton():
+            if torch.cuda.is_available():
+                torch.cuda.set_device(0)
+            m = YOLO(_gpu_config.YOLO_MODEL, task='detect')
+            if _gpu_config.YOLO_DEVICE.startswith('cuda'):
+                m.to(_gpu_config.YOLO_DEVICE)
+            import numpy as np
+            _dummy = np.zeros((640, 640, 3), dtype='uint8')
+            _is_cuda = _gpu_config.YOLO_DEVICE.startswith('cuda')
+            _warmup_device = _gpu_config.YOLO_DEVICE if _is_cuda else None
+            for _ in range(2):
+                m(_dummy, device=_warmup_device, half=_is_cuda, imgsz=640, verbose=False)
+            logger.info(f"[YOLO] Model ready on {_gpu_config.YOLO_DEVICE} (FP16={_is_cuda})")
+            return m
+
+        _YOLO_INSTANCE = _load_yolo_singleton()
+    except Exception as e:
+        logger.warning(f"[YOLO] Failed to load model, running in passthrough mode: {e}")
+else:
+    logger.info("[YOLO] SKIP_YOLO_LOAD=true — running in passthrough/demo mode")
 
 async def _run_vlm_analysis(app, feed_info: dict, snapshot_path: str):
     """Background task to run VLM analysis on an incident snapshot."""
@@ -182,19 +191,20 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
     main_loop = asyncio.get_running_loop()
     
     def frame_generator():
-        # Reuse the module-level singleton — weights already on GPU
-        model = _YOLO_INSTANCE
+        import cv2 as _cv2  # import here — may not be installed in cloud mode
+        model = _YOLO_INSTANCE  # None when SKIP_YOLO_LOAD=true
+        passthrough_mode = model is None
 
-        cap = cv2.VideoCapture(feed_info["filepath"])
-        tracker = AdvancedVehicleTracker()
+        cap = _cv2.VideoCapture(feed_info["filepath"])
+        tracker = _AdvancedVehicleTracker() if not passthrough_mode else None
 
-        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        width  = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(_cv2.CAP_PROP_FPS) or 25.0
         # Generator state
         incident_triggered = False
         frame_count = 0
-        trigger_frame = int(config.DEMO_TRIGGER_SECONDS * fps)
+        trigger_frame = int((_gpu_config.DEMO_TRIGGER_SECONDS if _gpu_config else 5.0) * fps)
         dispatched = False
         accident_buffer = [] # Buffer for median frame snapshot
 
@@ -305,8 +315,11 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
                 logger.exception("[SURVEILLANCE ERROR] Failed to dispatch incident from stream thread")
         
         try:
+            frame_skip = _gpu_config.FRAME_SKIP if _gpu_config else 1
+            resize_width = _gpu_config.RESIZE_WIDTH if _gpu_config else 1280
+
             while cap.isOpened():
-                if frame_count % config.FRAME_SKIP != 0:
+                if frame_count % frame_skip != 0:
                     if not cap.grab():  # advance without decoding; False = EOF
                         break
                     frame_count += 1
@@ -317,28 +330,27 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
                     break
                 frame_count += 1
 
-                # Rest of frame_generator loop...
-                if width > config.RESIZE_WIDTH:
-                    scale_factor = config.RESIZE_WIDTH / width
-                    new_width = config.RESIZE_WIDTH
+                if width > resize_width:
+                    scale_factor = resize_width / width
+                    new_width = resize_width
                     new_height = int(height * scale_factor)
-                    frame = cv2.resize(frame, (new_width, new_height))
+                    frame = _cv2.resize(frame, (new_width, new_height))
 
-                if feed_info.get("is_demo"):
-                    # Demo Mode: Skip YOLO/Tracker, just pass through the pre-processed frame
+                accident_flags = []
+
+                if feed_info.get("is_demo") or passthrough_mode:
+                    # Demo / cloud passthrough: stream the pre-processed frame as-is
                     vis_frame = frame
-                    detections = []
-                    accident_flags = []
                 else:
                     # YOLO inference — for OpenVINO, device= must be None (patched compile_model
                     # handles GPU routing). For CUDA, pass the device string explicitly.
-                    _infer_device = config.YOLO_DEVICE if config.YOLO_DEVICE.startswith('cuda') else None
+                    _infer_device = _gpu_config.YOLO_DEVICE if _gpu_config.YOLO_DEVICE.startswith('cuda') else None
                     yolo_results = model(
                         frame,
                         task='detect',
-                        conf=config.CONFIDENCE_THRESHOLD,
-                        iou=config.IOU_THRESHOLD,
-                        imgsz=config.IMG_SIZE,
+                        conf=_gpu_config.CONFIDENCE_THRESHOLD,
+                        iou=_gpu_config.IOU_THRESHOLD,
+                        imgsz=_gpu_config.IMG_SIZE,
                         device=_infer_device,
                         verbose=False,
                     )
@@ -348,7 +360,7 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
                         boxes = yolo_results[0].boxes.data.cpu().numpy()
                         for box in boxes:
                             x1, y1, x2, y2, conf, cls_id = box
-                            if int(cls_id) in config.VEHICLE_CLASSES:
+                            if int(cls_id) in _gpu_config.VEHICLE_CLASSES:
                                 center_x, center_y = int((x1 + x2) / 2), int((y1 + y2) / 2)
                                 detection = {
                                     'bbox': [int(x1), int(y1), int(x2), int(y2)],
@@ -361,18 +373,18 @@ async def stream_surveillance_feed(request: Request, feed_id: str):
                     
                     if len(accident_flags) > 0:
                         accident_buffer.append(frame.copy())
-                        if len(accident_buffer) > 100: # Max 4 seconds at 25fps
+                        if len(accident_buffer) > 100:  # Max 4 seconds at 25fps
                             accident_buffer.pop(0)
 
-                    vis_frame = create_advanced_visualization(frame, detections, accident_flags)
+                    vis_frame = _create_advanced_visualization(frame, detections, accident_flags)
                 
-                # Demo policy: dispatch quickly if accident flags appear OR after a short warmup.
+                # Dispatch incident after trigger frame or if accident detected
                 if len(accident_flags) > 0 or frame_count >= trigger_frame:
                     _dispatch_incident(frame_count)
                         
                 # Encode to MJPEG — quality 75 keeps size small and encoding fast
-                encode_params = [cv2.IMWRITE_JPEG_QUALITY, 75]
-                _, buffer = cv2.imencode('.jpg', vis_frame, encode_params)
+                encode_params = [_cv2.IMWRITE_JPEG_QUALITY, 75]
+                _, buffer = _cv2.imencode('.jpg', vis_frame, encode_params)
                 frame_bytes = buffer.tobytes()
                 
                 yield (b'--frame\r\n'

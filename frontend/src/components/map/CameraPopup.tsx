@@ -201,7 +201,7 @@ export const CameraPopup: React.FC<CameraPopupProps> = ({ cam, onClose }) => {
                   disabled={!file || loading}
                   className="w-full py-1.5 text-xs font-bold rounded flex justify-center items-center bg-blue-600/90 hover:bg-blue-600 text-white disabled:bg-gray-800 disabled:text-gray-600 transition-colors"
                 >
-                  {loading ? 'RUNNING YOLO V8...' : 'INJECT FEED'}
+                  {loading ? 'INFERENCE RUNNING...' : 'INJECT FEED'}
                 </button>
 
                 <button
