@@ -6,7 +6,6 @@ import {
   X, 
   Zap, 
   Check, 
-  Clock,
   Activity
 } from 'lucide-react';
 

@@ -9,7 +9,7 @@ import {
   Popup,
   Pane
 } from 'react-leaflet';
-import L from 'leaflet';
+
 import 'leaflet/dist/leaflet.css';
 import { api } from '../../services/api';
 import { 
@@ -36,30 +36,9 @@ type LatLng = [number, number];
 const toLatLng = (coords: number[][] = []): LatLng[] =>
   coords.filter((c) => c.length >= 2).map((c) => [c[1], c[0]]);
 
-const mapMidpoint = (pts: LatLng[]): LatLng | null => {
-  if (!pts.length) return null;
-  const mid = pts[Math.floor(pts.length / 2)];
-  return [mid[0], mid[1]];
-};
 
-// Pulsing Marker Icon
-const createPulsingIcon = (severity: string, isFocused: boolean) => {
-  const color = severity === 'critical' ? 'var(--color-critical)' : 'var(--color-warning)';
-  const size = isFocused ? 24 : 18;
-  
-  return L.divIcon({
-    className: 'custom-pulsing-icon',
-    html: `
-      <div style="position: relative; width: ${size}px; height: ${size}px;">
-        <div style="position: absolute; width: 100%; height: 100%; border-radius: 50%; background: ${color}; opacity: 0.8; z-index: 2;"></div>
-        <div class="animate-pulse-live" style="position: absolute; width: 250%; height: 250%; top: -75%; left: -75%; border-radius: 50%; border: 2px solid ${color}; opacity: 0.4; z-index: 1;"></div>
-        ${isFocused ? `<div style="position: absolute; width: 320%; height: 320%; top: -110%; left: -110%; border-radius: 50%; border: 1px solid white; opacity: 0.6; z-index: 0;"></div>` : ''}
-      </div>
-    `,
-    iconSize: [size, size],
-    iconAnchor: [size/2, size/2]
-  });
-};
+
+
 
 const MapController: React.FC<{
   center: { lat: number; lng: number; zoom?: number } | null;
@@ -138,7 +117,7 @@ const TrafficMap: React.FC = () => {
 
   const handleMapAction = (type: 'diversion' | 'dispatch', inc: any) => {
     if (type === 'dispatch') {
-      api.dispatchPolice(inc.id, 'Operator').then(res => {
+      api.dispatchPolice(inc.id, 'Operator').then(() => {
          updateIncidentPoliceDispatch(inc.id, {
             police_dispatched: true,
             police_dispatched_at: new Date().toISOString()
